@@ -1,4 +1,4 @@
-package rev
+package revel
 
 import (
 	"log"
@@ -26,21 +26,23 @@ import (
 //
 // Func Interceptors may apply to any / all Controllers.
 //
-//   func example(*rev.Controller) rev.Result
+//   func example(*revel.Controller) revel.Result
 //
 // Method Interceptors are provided so that properties can be set on application
 // controllers.
 //
-//   func (c AppController) example() rev.Result
-//   func (c *AppController) example() rev.Result
+//   func (c AppController) example() revel.Result
+//   func (c *AppController) example() revel.Result
 //
 type InterceptorFunc func(*Controller) Result
 type InterceptorMethod interface{}
-type InterceptTime int
+type When int
 
 const (
-	BEFORE InterceptTime = iota
+	BEFORE When = iota
 	AFTER
+	PANIC
+	FINALLY
 )
 
 type InterceptTarget int
@@ -50,7 +52,7 @@ const (
 )
 
 type Interception struct {
-	When InterceptTime
+	When When
 
 	function InterceptorFunc
 	method   InterceptorMethod
@@ -83,13 +85,52 @@ func (i Interception) Invoke(val reflect.Value) reflect.Value {
 	return vals[0]
 }
 
+func InterceptorFilter(c *Controller, fc []Filter) {
+	defer invokeInterceptors(FINALLY, c)
+	defer func() {
+		if err := recover(); err != nil {
+			invokeInterceptors(PANIC, c)
+			panic(err)
+		}
+	}()
+
+	// Invoke the BEFORE interceptors and return early, if we get a result.
+	invokeInterceptors(BEFORE, c)
+	if c.Result != nil {
+		return
+	}
+
+	fc[0](c, fc[1:])
+	invokeInterceptors(AFTER, c)
+}
+
+func invokeInterceptors(when When, c *Controller) {
+	var (
+		app    = reflect.ValueOf(c.AppController)
+		result Result
+	)
+	for _, intc := range getInterceptors(when, app) {
+		resultValue := intc.Invoke(app)
+		if !resultValue.IsNil() {
+			result = resultValue.Interface().(Result)
+		}
+		if when == BEFORE && result != nil {
+			c.Result = result
+			return
+		}
+	}
+	if result != nil {
+		c.Result = result
+	}
+}
+
 var interceptors []*Interception
 
 // Install a general interceptor.
 // This can be applied to any Controller.
 // It must have the signature of:
-//   func example(c *rev.Controller) rev.Result
-func InterceptFunc(intc InterceptorFunc, when InterceptTime, target interface{}) {
+//   func example(c *revel.Controller) revel.Result
+func InterceptFunc(intc InterceptorFunc, when When, target interface{}) {
 	interceptors = append(interceptors, &Interception{
 		When:         when,
 		function:     intc,
@@ -100,13 +141,13 @@ func InterceptFunc(intc InterceptorFunc, when InterceptTime, target interface{})
 }
 
 // Install an interceptor method that applies to its own Controller.
-//   func (c AppController) example() rev.Result
-//   func (c *AppController) example() rev.Result
-func InterceptMethod(intc InterceptorMethod, when InterceptTime) {
+//   func (c AppController) example() revel.Result
+//   func (c *AppController) example() revel.Result
+func InterceptMethod(intc InterceptorMethod, when When) {
 	methodType := reflect.TypeOf(intc)
 	if methodType.Kind() != reflect.Func || methodType.NumOut() != 1 || methodType.NumIn() != 1 {
 		log.Fatalln("Interceptor method should have signature like",
-			"'func (c *AppController) example() rev.Result' but was", methodType)
+			"'func (c *AppController) example() revel.Result' but was", methodType)
 	}
 	interceptors = append(interceptors, &Interception{
 		When:     when,
@@ -116,7 +157,7 @@ func InterceptMethod(intc InterceptorMethod, when InterceptTime) {
 	})
 }
 
-func getInterceptors(when InterceptTime, val reflect.Value) []*Interception {
+func getInterceptors(when When, val reflect.Value) []*Interception {
 	result := []*Interception{}
 	for _, intc := range interceptors {
 		if intc.When != when {
@@ -134,8 +175,11 @@ func getInterceptors(when InterceptTime, val reflect.Value) []*Interception {
 // Also, convert between any difference in indirection.
 // If the target couldn't be found, the returned Value will have IsValid() == false
 func findTarget(val reflect.Value, target reflect.Type) reflect.Value {
-	// Look through the embedded types (until we reach the *rev.Controller at the top).
-	for {
+	// Look through the embedded types (until we reach the *revel.Controller at the top).
+	valueQueue := []reflect.Value{val}
+	for len(valueQueue) > 0 {
+		val, valueQueue = valueQueue[0], valueQueue[1:]
+
 		// Check if val is of a similar type to the target type.
 		if val.Type() == target {
 			return val
@@ -147,17 +191,22 @@ func findTarget(val reflect.Value, target reflect.Type) reflect.Value {
 			return val.Addr()
 		}
 
-		// If we reached the *rev.Controller and still didn't find what we were
+		// If we reached the *revel.Controller and still didn't find what we were
 		// looking for, give up.
 		if val.Type() == controllerPtrType {
-			break
+			continue
 		}
 
-		// Else, drill into the first field (which had better be an embedded type).
+		// Else, add each anonymous field to the queue.
 		if val.Kind() == reflect.Ptr {
 			val = val.Elem()
 		}
-		val = val.Field(0)
+
+		for i := 0; i < val.NumField(); i++ {
+			if val.Type().Field(i).Anonymous {
+				valueQueue = append(valueQueue, val.Field(i))
+			}
+		}
 	}
 
 	return reflect.Value{}

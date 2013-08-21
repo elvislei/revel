@@ -5,7 +5,6 @@
     <title>{{.title}}</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <link rel="stylesheet" type="text/css" media="screen" href="/public/css/main.css">
-    <link rel="shortcut icon" type="image/png" href="/public/img/favicon.png">
     {{range .moreStyles}}
       <link rel="stylesheet" type="text/css" href="/public/{{.}}">
     {{end}}
@@ -23,11 +22,11 @@
         <div id="options">
           Connected as {{.user.Username}}
           |
-          <a href="{{url "Hotels.index"}}">Search</a>
+          <a href="{{url "Hotels.Index"}}">Search</a>
           |
-          <a href="{{url "Hotels.settings"}}">Settings</a>
+          <a href="{{url "Hotels.Settings"}}">Settings</a>
           |
-          <a href="{{url "Application.logout"}}">Logout</a>
+          <a href="{{url "Application.Logout"}}">Logout</a>
         </div>
       {{end}}
     </div>

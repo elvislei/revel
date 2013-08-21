@@ -1,6 +1,7 @@
-package rev
+package revel
 
 import (
+	"fmt"
 	"io"
 	"io/ioutil"
 	"mime/multipart"
@@ -12,24 +13,34 @@ import (
 )
 
 // A Binder translates between string parameters and Go data structures.
-//
-// Here is an example.
-//
-// Request:
-//   url?id=123&ol[0]=1&ol[1]=2&ul[]=str&ul[]=array&user.Name=rob
-// Action:
-//   Example.Action(id int, ol []int, ul []string, user User)
-// Calls:
-//   Binder(params, "id", int): 123
-//   Binder(params, "ol", []int): {1, 2}
-//   Binder(params, "ul", []string): {"str", "array"}
-//   Binder(params, "user", User): User{Name:"rob"}
-//
-// Note that only exported struct fields may be bound.
-type Binder func(params *Params, name string, typ reflect.Type) reflect.Value
+type Binder struct {
+	// Bind takes the name and type of the desired parameter and constructs it
+	// from one or more values from Params.
+	//
+	// Example
+	//
+	// Request:
+	//   url?id=123&ol[0]=1&ol[1]=2&ul[]=str&ul[]=array&user.Name=rob
+	//
+	// Action:
+	//   Example.Action(id int, ol []int, ul []string, user User)
+	//
+	// Calls:
+	//   Bind(params, "id", int): 123
+	//   Bind(params, "ol", []int): {1, 2}
+	//   Bind(params, "ul", []string): {"str", "array"}
+	//   Bind(params, "user", User): User{Name:"rob"}
+	//
+	// Note that only exported struct fields may be bound.
+	Bind func(params *Params, name string, typ reflect.Type) reflect.Value
+
+	// Unbind serializes a given value to one or more URL parameters of the given
+	// name.
+	Unbind func(output map[string]string, name string, val interface{})
+}
 
 // An adapter for easily making one-key-value binders.
-func ValueBinder(f func(value string, typ reflect.Type) reflect.Value) Binder {
+func ValueBinder(f func(value string, typ reflect.Type) reflect.Value) func(*Params, string, reflect.Type) reflect.Value {
 	return func(params *Params, name string, typ reflect.Type) reflect.Value {
 		vals, ok := params.Values[name]
 		if !ok || len(vals) == 0 {
@@ -39,69 +50,184 @@ func ValueBinder(f func(value string, typ reflect.Type) reflect.Value) Binder {
 	}
 }
 
-// These are the lookups to find a Binder for any type of data.
-// The most specific binder found will be used (Type before Kind)
+const (
+	DEFAULT_DATE_FORMAT     = "2006-01-02"
+	DEFAULT_DATETIME_FORMAT = "2006-01-02 15:04"
+)
+
 var (
+	// These are the lookups to find a Binder for any type of data.
+	// The most specific binder found will be used (Type before Kind)
 	TypeBinders = make(map[reflect.Type]Binder)
 	KindBinders = make(map[reflect.Kind]Binder)
+
+	// Applications can add custom time formats to this array, and they will be
+	// automatically attempted when binding a time.Time.
+	TimeFormats = []string{}
+
+	DateFormat     string
+	DateTimeFormat string
+
+	IntBinder = Binder{
+		Bind: ValueBinder(func(val string, typ reflect.Type) reflect.Value {
+			if len(val) == 0 {
+				return reflect.Zero(typ)
+			}
+			intValue, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				WARN.Println(err)
+				return reflect.Zero(typ)
+			}
+			pValue := reflect.New(typ)
+			pValue.Elem().SetInt(intValue)
+			return pValue.Elem()
+		}),
+		Unbind: func(output map[string]string, key string, val interface{}) {
+			output[key] = fmt.Sprintf("%d", val)
+		},
+	}
+
+	UintBinder = Binder{
+		Bind: ValueBinder(func(val string, typ reflect.Type) reflect.Value {
+			if len(val) == 0 {
+				return reflect.Zero(typ)
+			}
+			uintValue, err := strconv.ParseUint(val, 10, 64)
+			if err != nil {
+				WARN.Println(err)
+				return reflect.Zero(typ)
+			}
+			pValue := reflect.New(typ)
+			pValue.Elem().SetUint(uintValue)
+			return pValue.Elem()
+		}),
+		Unbind: func(output map[string]string, key string, val interface{}) {
+			output[key] = fmt.Sprintf("%d", val)
+		},
+	}
+
+	FloatBinder = Binder{
+		Bind: ValueBinder(func(val string, typ reflect.Type) reflect.Value {
+			if len(val) == 0 {
+				return reflect.Zero(typ)
+			}
+			floatValue, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				WARN.Println(err)
+				return reflect.Zero(typ)
+			}
+			pValue := reflect.New(typ)
+			pValue.Elem().SetFloat(floatValue)
+			return pValue.Elem()
+		}),
+		Unbind: func(output map[string]string, key string, val interface{}) {
+			output[key] = fmt.Sprintf("%f", val)
+		},
+	}
+
+	StringBinder = Binder{
+		Bind: ValueBinder(func(val string, typ reflect.Type) reflect.Value {
+			return reflect.ValueOf(val)
+		}),
+		Unbind: func(output map[string]string, name string, val interface{}) {
+			output[name] = val.(string)
+		},
+	}
+
+	// Booleans support a couple different value formats:
+	// "true" and "false"
+	// "on" and "" (a checkbox)
+	// "1" and "0" (why not)
+	BoolBinder = Binder{
+		Bind: ValueBinder(func(val string, typ reflect.Type) reflect.Value {
+			v := strings.TrimSpace(strings.ToLower(val))
+			switch v {
+			case "true", "on", "1":
+				return reflect.ValueOf(true)
+			}
+			// Return false by default.
+			return reflect.ValueOf(false)
+		}),
+		Unbind: func(output map[string]string, name string, val interface{}) {
+			output[name] = fmt.Sprintf("%t", val)
+		},
+	}
+
+	PointerBinder = Binder{
+		Bind: func(params *Params, name string, typ reflect.Type) reflect.Value {
+			return Bind(params, name, typ.Elem()).Addr()
+		},
+		Unbind: func(output map[string]string, name string, val interface{}) {
+			Unbind(output, name, reflect.ValueOf(val).Elem().Interface())
+		},
+	}
+
+	TimeBinder = Binder{
+		Bind: ValueBinder(func(val string, typ reflect.Type) reflect.Value {
+			for _, f := range TimeFormats {
+				if r, err := time.Parse(f, val); err == nil {
+					return reflect.ValueOf(r)
+				}
+			}
+			return reflect.Zero(typ)
+		}),
+		Unbind: func(output map[string]string, name string, val interface{}) {
+			var (
+				t       = val.(time.Time)
+				format  = DateTimeFormat
+				h, m, s = t.Clock()
+			)
+			if h == 0 && m == 0 && s == 0 {
+				format = DateFormat
+			}
+			output[name] = t.Format(format)
+		},
+	}
+
+	MapBinder = Binder{
+		Bind:   bindMap,
+		Unbind: unbindMap,
+	}
 )
 
 // Sadly, the binder lookups can not be declared initialized -- that results in
 // an "initialization loop" compile error.
 func init() {
-	intBinder := ValueBinder(bindInt)
+	KindBinders[reflect.Int] = IntBinder
+	KindBinders[reflect.Int8] = IntBinder
+	KindBinders[reflect.Int16] = IntBinder
+	KindBinders[reflect.Int32] = IntBinder
+	KindBinders[reflect.Int64] = IntBinder
 
-	KindBinders[reflect.Int] = intBinder
-	KindBinders[reflect.Int8] = intBinder
-	KindBinders[reflect.Int16] = intBinder
-	KindBinders[reflect.Int32] = intBinder
-	KindBinders[reflect.Int64] = intBinder
+	KindBinders[reflect.Uint] = UintBinder
+	KindBinders[reflect.Uint8] = UintBinder
+	KindBinders[reflect.Uint16] = UintBinder
+	KindBinders[reflect.Uint32] = UintBinder
+	KindBinders[reflect.Uint64] = UintBinder
 
-	KindBinders[reflect.String] = ValueBinder(bindStr)
-	KindBinders[reflect.Bool] = ValueBinder(bindBool)
-	KindBinders[reflect.Slice] = bindSlice
-	KindBinders[reflect.Struct] = bindStruct
-	KindBinders[reflect.Ptr] = bindPointer
+	KindBinders[reflect.Float32] = FloatBinder
+	KindBinders[reflect.Float64] = FloatBinder
 
-	TypeBinders[reflect.TypeOf(time.Time{})] = ValueBinder(bindTime)
+	KindBinders[reflect.String] = StringBinder
+	KindBinders[reflect.Bool] = BoolBinder
+	KindBinders[reflect.Slice] = Binder{bindSlice, unbindSlice}
+	KindBinders[reflect.Struct] = Binder{bindStruct, unbindStruct}
+	KindBinders[reflect.Ptr] = PointerBinder
+	KindBinders[reflect.Map] = MapBinder
+
+	TypeBinders[reflect.TypeOf(time.Time{})] = TimeBinder
 
 	// Uploads
-	TypeBinders[reflect.TypeOf(&os.File{})] = bindFile
-	TypeBinders[reflect.TypeOf([]byte{})] = bindByteArray
-	TypeBinders[reflect.TypeOf((*io.Reader)(nil)).Elem()] = bindReadSeeker
-	TypeBinders[reflect.TypeOf((*io.ReadSeeker)(nil)).Elem()] = bindReadSeeker
-}
+	TypeBinders[reflect.TypeOf(&os.File{})] = Binder{bindFile, nil}
+	TypeBinders[reflect.TypeOf([]byte{})] = Binder{bindByteArray, nil}
+	TypeBinders[reflect.TypeOf((*io.Reader)(nil)).Elem()] = Binder{bindReadSeeker, nil}
+	TypeBinders[reflect.TypeOf((*io.ReadSeeker)(nil)).Elem()] = Binder{bindReadSeeker, nil}
 
-var (
-	// Applications can add custom time formats to this array, and they will be
-	// automatically attempted when binding a time.Time.
-	TimeFormats = []string{"2006-01-02", "2006-01-02 15:04"}
-)
-
-func bindStr(val string, typ reflect.Type) reflect.Value {
-	return reflect.ValueOf(val)
-}
-
-func bindInt(val string, typ reflect.Type) reflect.Value {
-	intValue, err := strconv.Atoi(val)
-	if err != nil {
-		WARN.Println("BindInt:", err)
-	}
-	return reflect.ValueOf(intValue)
-}
-
-// Booleans support a couple different value formats:
-// "true" and "false"
-// "on" and "" (a checkbox)
-// "1" and "0" (why not)
-func bindBool(val string, typ reflect.Type) reflect.Value {
-	v := strings.TrimSpace(strings.ToLower(val))
-	switch v {
-	case "true", "on", "1":
-		return reflect.ValueOf(true)
-	}
-	// Return false by default.
-	return reflect.ValueOf(false)
+	OnAppStart(func() {
+		DateTimeFormat = Config.StringDefault("format.datetime", DEFAULT_DATETIME_FORMAT)
+		DateFormat = Config.StringDefault("format.date", DEFAULT_DATE_FORMAT)
+		TimeFormats = append(TimeFormats, DateTimeFormat, DateFormat)
+	})
 }
 
 // Used to keep track of the index for individual keyvalues.
@@ -193,6 +319,13 @@ func nextKey(key string) string {
 	return key[:fieldLen]
 }
 
+func unbindSlice(output map[string]string, name string, val interface{}) {
+	v := reflect.ValueOf(val)
+	for i := 0; i < v.Len(); i++ {
+		Unbind(output, fmt.Sprintf("%s[%d]", name, i), v.Index(i).Interface())
+	}
+}
+
 func bindStruct(params *Params, name string, typ reflect.Type) reflect.Value {
 	result := reflect.New(typ).Elem()
 	fieldValues := make(map[string]reflect.Value)
@@ -227,18 +360,18 @@ func bindStruct(params *Params, name string, typ reflect.Type) reflect.Value {
 	return result
 }
 
-func bindPointer(params *Params, name string, typ reflect.Type) reflect.Value {
-	return Bind(params, name, typ.Elem()).Addr()
-}
+func unbindStruct(output map[string]string, name string, iface interface{}) {
+	val := reflect.ValueOf(iface)
+	typ := val.Type()
+	for i := 0; i < val.NumField(); i++ {
+		structField := typ.Field(i)
+		fieldValue := val.Field(i)
 
-// This expects a single keyValue.
-func bindTime(val string, typ reflect.Type) reflect.Value {
-	for _, f := range TimeFormats {
-		if r, err := time.Parse(f, val); err == nil {
-			return reflect.ValueOf(r)
+		// PkgPath is specified to be empty exactly for exported fields.
+		if structField.PkgPath == "" {
+			Unbind(output, fmt.Sprintf("%s.%s", name, structField.Name), fieldValue.Interface())
 		}
 	}
-	return reflect.Zero(typ)
 }
 
 // Helper that returns an upload of the given name, or nil.
@@ -300,13 +433,6 @@ func bindByteArray(params *Params, name string, typ reflect.Type) reflect.Value 
 	return reflect.Zero(typ)
 }
 
-func bindReader(params *Params, name string, typ reflect.Type) reflect.Value {
-	if reader := getMultipartFile(params, name); reader != nil {
-		return reflect.ValueOf(reader.(io.Reader))
-	}
-	return reflect.Zero(typ)
-}
-
 func bindReadSeeker(params *Params, name string, typ reflect.Type) reflect.Value {
 	if reader := getMultipartFile(params, name); reader != nil {
 		return reflect.ValueOf(reader.(io.ReadSeeker))
@@ -314,22 +440,41 @@ func bindReadSeeker(params *Params, name string, typ reflect.Type) reflect.Value
 	return reflect.Zero(typ)
 }
 
-// Parse the value string into a real Go value.
-// Returns 0 values when things can not be parsed.
-func Bind(params *Params, name string, typ reflect.Type) reflect.Value {
-	if typ == nil {
-		return reflect.ValueOf(nil)
-	}
-
-	binder, ok := TypeBinders[typ]
-	if !ok {
-		binder, ok = KindBinders[typ.Kind()]
-		if !ok {
-			WARN.Println("No binder for type:", typ)
-			return reflect.Zero(typ)
+// bindMap converts parameters using map syntax into the corresponding map. e.g.:
+//   params["a[5]"]=foo, name="a", typ=map[int]string => map[int]string{5: "foo"}
+func bindMap(params *Params, name string, typ reflect.Type) reflect.Value {
+	var (
+		result    = reflect.MakeMap(typ)
+		keyType   = typ.Key()
+		valueType = typ.Elem()
+	)
+	for paramName, values := range params.Values {
+		if !strings.HasPrefix(paramName, name+"[") || paramName[len(paramName)-1] != ']' {
+			continue
 		}
+
+		key := paramName[len(name)+1 : len(paramName)-1]
+		result.SetMapIndex(BindValue(key, keyType), BindValue(values[0], valueType))
 	}
-	return binder(params, name, typ)
+	return result
+}
+
+func unbindMap(output map[string]string, name string, iface interface{}) {
+	mapValue := reflect.ValueOf(iface)
+	for _, key := range mapValue.MapKeys() {
+		Unbind(output, name+"["+fmt.Sprintf("%v", key.Interface())+"]",
+			mapValue.MapIndex(key).Interface())
+	}
+}
+
+// Bind takes the name and type of the desired parameter and constructs it
+// from one or more values from Params.
+// Returns the zero value of the type upon any sort of failure.
+func Bind(params *Params, name string, typ reflect.Type) reflect.Value {
+	if binder, found := binderForType(typ); found {
+		return binder.Bind(params, name, typ)
+	}
+	return reflect.Zero(typ)
 }
 
 func BindValue(val string, typ reflect.Type) reflect.Value {
@@ -338,4 +483,26 @@ func BindValue(val string, typ reflect.Type) reflect.Value {
 
 func BindFile(fileHeader *multipart.FileHeader, typ reflect.Type) reflect.Value {
 	return Bind(&Params{Files: map[string][]*multipart.FileHeader{"": {fileHeader}}}, "", typ)
+}
+
+func Unbind(output map[string]string, name string, val interface{}) {
+	if binder, found := binderForType(reflect.TypeOf(val)); found {
+		if binder.Unbind != nil {
+			binder.Unbind(output, name, val)
+		} else {
+			ERROR.Printf("revel/binder: can not unbind %s=%s", name, val)
+		}
+	}
+}
+
+func binderForType(typ reflect.Type) (Binder, bool) {
+	binder, ok := TypeBinders[typ]
+	if !ok {
+		binder, ok = KindBinders[typ.Kind()]
+		if !ok {
+			WARN.Println("revel/binder: no binder for type:", typ)
+			return Binder{}, false
+		}
+	}
+	return binder, true
 }

@@ -1,4 +1,4 @@
-package rev
+package revel
 
 import (
 	"fmt"
@@ -30,14 +30,12 @@ func (f Flash) Success(msg string, args ...interface{}) {
 	}
 }
 
-type FlashPlugin struct{ EmptyPlugin }
-
-func (p FlashPlugin) BeforeRequest(c *Controller) {
+func FlashFilter(c *Controller, fc []Filter) {
 	c.Flash = restoreFlash(c.Request.Request)
 	c.RenderArgs["flash"] = c.Flash.Data
-}
 
-func (p FlashPlugin) AfterRequest(c *Controller) {
+	fc[0](c, fc[1:])
+
 	// Store the flash.
 	var flashValue string
 	for key, value := range c.Flash.Out {
@@ -62,8 +60,4 @@ func restoreFlash(req *http.Request) Flash {
 		})
 	}
 	return flash
-}
-
-func init() {
-	RegisterPlugin(FlashPlugin{})
 }

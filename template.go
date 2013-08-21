@@ -1,4 +1,4 @@
-package rev
+package revel
 
 import (
 	"fmt"
@@ -6,11 +6,14 @@ import (
 	"html/template"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var ERROR_CLASS = "hasError"
@@ -34,31 +37,14 @@ type Template interface {
 	Render(wr io.Writer, arg interface{}) error
 }
 
-type Field struct {
-	Name, Value string
-	Error       *ValidationError
-}
-
-func (f *Field) ErrorClass() string {
-	if f.Error != nil {
-		return ERROR_CLASS
-	}
-	return ""
-}
-
-// Return "checked" if this field.Value matches the provided value
-func (f *Field) Checked(val string) string {
-	if f.Value == val {
-		return "checked"
-	}
-	return ""
-}
+var invalidSlugPattern = regexp.MustCompile(`[^a-z0-9 _-]`)
+var whiteSpacePattern = regexp.MustCompile(`\s+`)
 
 var (
 	// The functions available for use in the templates.
 	TemplateFuncs = map[string]interface{}{
 		"url": ReverseUrl,
-		"eq":  func(a, b interface{}) bool { return a == b },
+		"eq":  Equal,
 		"set": func(renderArgs map[string]interface{}, key string, value interface{}) template.HTML {
 			renderArgs[key] = value
 			return template.HTML("")
@@ -71,18 +57,10 @@ var (
 			}
 			return template.HTML("")
 		},
-		"field": func(name string, renderArgs map[string]interface{}) *Field {
-			value, _ := renderArgs["flash"].(map[string]string)[name]
-			err, _ := renderArgs["errors"].(map[string]*ValidationError)[name]
-			return &Field{
-				Name:  name,
-				Value: value,
-				Error: err,
-			}
-		},
+		"field": NewField,
 		"option": func(f *Field, val, label string) template.HTML {
 			selected := ""
-			if f.Value == val {
+			if f.Flash() == val {
 				selected = " selected"
 			}
 			return template.HTML(fmt.Sprintf(`<option value="%s"%s>%s</option>`,
@@ -90,13 +68,20 @@ var (
 		},
 		"radio": func(f *Field, val string) template.HTML {
 			checked := ""
-			if f.Value == val {
+			if f.Flash() == val {
 				checked = " checked"
 			}
 			return template.HTML(fmt.Sprintf(`<input type="radio" name="%s" value="%s"%s>`,
 				html.EscapeString(f.Name), html.EscapeString(val), checked))
 		},
-
+		"checkbox": func(f *Field, val string) template.HTML {
+			checked := ""
+			if f.Flash() == val {
+				checked = " checked"
+			}
+			return template.HTML(fmt.Sprintf(`<input type="checkbox" name="%s" value="%s"%s>`,
+				html.EscapeString(f.Name), html.EscapeString(val), checked))
+		},
 		// Pads the given string with &nbsp;'s up to the given width.
 		"pad": func(str string, width int) template.HTML {
 			if len(str) >= width {
@@ -117,9 +102,58 @@ var (
 			}
 			return template.HTML(ERROR_CLASS)
 		},
-	}
 
-	Funcs = TemplateFuncs
+		"msg": func(renderArgs map[string]interface{}, message string, args ...interface{}) template.HTML {
+			return template.HTML(Message(renderArgs[CurrentLocaleRenderArg].(string), message, args...))
+		},
+
+		// Replaces newlines with <br>
+		"nl2br": func(text string) template.HTML {
+			return template.HTML(strings.Replace(template.HTMLEscapeString(text), "\n", "<br>", -1))
+		},
+
+		// Skips sanitation on the parameter.  Do not use with dynamic data.
+		"raw": func(text string) template.HTML {
+			return template.HTML(text)
+		},
+
+		// Pluralize, a helper for pluralizing words to correspond to data of dynamic length.
+		// items - a slice of items, or an integer indicating how many items there are.
+		// pluralOverrides - optional arguments specifying the output in the
+		//     singular and plural cases.  by default "" and "s"
+		"pluralize": func(items interface{}, pluralOverrides ...string) string {
+			singular, plural := "", "s"
+			if len(pluralOverrides) >= 1 {
+				singular = pluralOverrides[0]
+				if len(pluralOverrides) == 2 {
+					plural = pluralOverrides[1]
+				}
+			}
+
+			switch v := reflect.ValueOf(items); v.Kind() {
+			case reflect.Int:
+				if items.(int) != 1 {
+					return plural
+				}
+			case reflect.Slice:
+				if v.Len() != 1 {
+					return plural
+				}
+			default:
+				ERROR.Println("pluralize: unexpected type: ", v)
+			}
+			return singular
+		},
+
+		// Format a date according to the application's default date(time) format.
+		"date": func(date time.Time) string {
+			return date.Format(DateFormat)
+		},
+		"datetime": func(date time.Time) string {
+			return date.Format(DateTimeFormat)
+		},
+		"slug": Slug,
+	}
 )
 
 func NewTemplateLoader(paths []string) *TemplateLoader {
@@ -133,9 +167,20 @@ func NewTemplateLoader(paths []string) *TemplateLoader {
 // If a template fails to parse, the error is set on the loader.
 // (It's awkward to refresh a single Go Template)
 func (loader *TemplateLoader) Refresh() *Error {
-	TRACE.Println("Refresh")
+	TRACE.Printf("Refreshing templates from %s", loader.paths)
+
 	loader.compileError = nil
 	loader.templatePaths = map[string]string{}
+
+	// Set the template delimiters for the project if present, then split into left
+	// and right delimiters around a space character
+	var splitDelims []string
+	if TemplateDelims != "" {
+		splitDelims = strings.Split(TemplateDelims, " ")
+		if len(splitDelims) != 2 {
+			log.Fatalln("app.conf: Incorrect format for template.delimiters")
+		}
+	}
 
 	// Walk through the template loader's paths and build up a template set.
 	var templateSet *template.Template = nil
@@ -164,7 +209,7 @@ func (loader *TemplateLoader) Refresh() *Error {
 			// Convert template names to use forward slashes, even on Windows.
 			templateName := path[len(basePath)+1:]
 			if os.PathSeparator == '\\' {
-				templateName = strings.Replace(templateName, `\`, `/`, -1)
+				templateName = strings.Replace(templateName, `\`, `/`, -1) // `
 			}
 
 			// If we already loaded a template of this name, skip it.
@@ -180,6 +225,7 @@ func (loader *TemplateLoader) Refresh() *Error {
 			}
 
 			fileStr := string(fileBytes)
+
 			if templateSet == nil {
 				// Create the template set.  This panics if any of the funcs do not
 				// conform to expectations, so we wrap it in a func and handle those
@@ -195,6 +241,13 @@ func (loader *TemplateLoader) Refresh() *Error {
 						}
 					}()
 					templateSet = template.New(templateName).Funcs(TemplateFuncs)
+					// If alternate delimiters set for the project, change them for this set
+					if splitDelims != nil && basePath == ViewsPath {
+						templateSet.Delims(splitDelims[0], splitDelims[1])
+					} else {
+						// Reset to default otherwise
+						templateSet.Delims("", "")
+					}
 					_, err = templateSet.Parse(fileStr)
 				}()
 
@@ -203,12 +256,17 @@ func (loader *TemplateLoader) Refresh() *Error {
 				}
 
 			} else {
+				if splitDelims != nil && basePath == ViewsPath {
+					templateSet.Delims(splitDelims[0], splitDelims[1])
+				} else {
+					templateSet.Delims("", "")
+				}
 				_, err = templateSet.New(templateName).Parse(fileStr)
 			}
 
 			// Store / report the first error encountered.
 			if err != nil && loader.compileError == nil {
-				line, description := parseTemplateError(err)
+				_, line, description := parseTemplateError(err)
 				loader.compileError = &Error{
 					Title:       "Template Compilation Error",
 					Path:        templateName,
@@ -246,7 +304,7 @@ func (loader *TemplateLoader) WatchFile(basename string) bool {
 
 // Parse the line, and description from an error message like:
 // html/template:Application/Register.html:36: no such template "footer.html"
-func parseTemplateError(err error) (line int, description string) {
+func parseTemplateError(err error) (templateName string, line int, description string) {
 	description = err.Error()
 	i := regexp.MustCompile(`:\d+:`).FindStringIndex(description)
 	if i != nil {
@@ -254,9 +312,14 @@ func parseTemplateError(err error) (line int, description string) {
 		if err != nil {
 			ERROR.Println("Failed to parse line number from error message:", err)
 		}
+		templateName = description[:i[0]]
+		if colon := strings.Index(templateName, ":"); colon != -1 {
+			templateName = templateName[colon+1:]
+		}
+		templateName = strings.TrimSpace(templateName)
 		description = description[i[1]+1:]
 	}
-	return line, description
+	return templateName, line, description
 }
 
 // Return the Template with the given name.  The name is the template's path
@@ -289,7 +352,7 @@ type GoTemplate struct {
 	loader *TemplateLoader
 }
 
-// return a 'rev.Template' from Go's template.
+// return a 'revel.Template' from Go's template.
 func (gotmpl GoTemplate) Render(wr io.Writer, arg interface{}) error {
 	return gotmpl.Execute(wr, arg)
 }
@@ -305,26 +368,37 @@ func (gotmpl GoTemplate) Content() []string {
 
 // Return a url capable of invoking a given controller method:
 // "Application.ShowApp 123" => "/app/123"
-func ReverseUrl(args ...interface{}) string {
+func ReverseUrl(args ...interface{}) (string, error) {
 	if len(args) == 0 {
-		ERROR.Println("Warning: no arguments provided to url function")
-		return "#"
+		return "", fmt.Errorf("no arguments provided to reverse route")
 	}
 
 	action := args[0].(string)
 	actionSplit := strings.Split(action, ".")
-	var ctrl, meth string
 	if len(actionSplit) != 2 {
-		ERROR.Println("Warning: Must provide Controller.Method for reverse router.")
-		return "#"
-	}
-	ctrl, meth = actionSplit[0], actionSplit[1]
-	controllerType := LookupControllerType(ctrl)
-	methodType := controllerType.Method(meth)
-	argsByName := make(map[string]string)
-	for i, argValue := range args[1:] {
-		argsByName[methodType.Args[i].Name] = fmt.Sprintf("%s", argValue)
+		return "", fmt.Errorf("reversing '%s', expected 'Controller.Action'", action)
 	}
 
-	return MainRouter.Reverse(args[0].(string), argsByName).Url
+	// Look up the types.
+	var c Controller
+	if err := c.SetAction(actionSplit[0], actionSplit[1]); err != nil {
+		return "", fmt.Errorf("reversing %s: %s", action, err)
+	}
+
+	// Unbind the arguments.
+	argsByName := make(map[string]string)
+	for i, argValue := range args[1:] {
+		Unbind(argsByName, c.MethodType.Args[i].Name, argValue)
+	}
+
+	return MainRouter.Reverse(args[0].(string), argsByName).Url, nil
+}
+
+func Slug(text string) string {
+	separator := "-"
+	text = strings.ToLower(text)
+	text = invalidSlugPattern.ReplaceAllString(text, "")
+	text = whiteSpacePattern.ReplaceAllString(text, separator)
+	text = strings.Trim(text, separator)
+	return text
 }

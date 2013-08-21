@@ -1,9 +1,10 @@
-package rev
+package revel
 
 import (
-	"github.com/robfig/goconfig/config"
+	"github.com/robfig/config"
 	"go/build"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -26,6 +27,7 @@ var (
 
 	Config  *MergedConfig
 	RunMode string // Application-defined (by default, "dev" or "prod")
+	DevMode bool   // if true, RunMode is a development mode.
 
 	// Revel installation details
 	RevelPath string // e.g. "/Users/robfig/gocode/src/revel"
@@ -38,35 +40,39 @@ var (
 
 	Modules []Module
 
-	// Server config.	
+	// Server config.
 	//
 	// Alert: This is how the app is configured, which may be different from
 	// the current process reality.  For example, if the app is configured for
 	// port 9000, HttpPort will always be 9000, even though in dev mode it is
-	// run on a random port and proxied. 
-	HttpPort int    // e.g. 9000
-	HttpAddr string // e.g. "", "127.0.0.1"
+	// run on a random port and proxied.
+	HttpPort    int    // e.g. 9000
+	HttpAddr    string // e.g. "", "127.0.0.1"
+	HttpSsl     bool   // e.g. true if using ssl
+	HttpSslCert string // e.g. "/path/to/cert.pem"
+	HttpSslKey  string // e.g. "/path/to/key.pem"
 
 	// All cookies dropped by the framework begin with this prefix.
 	CookiePrefix string
 
-	// Loggers
-	DEFAULT = log.New(os.Stderr, "", log.Ldate|log.Ltime|log.Lshortfile)
-	TRACE   = DEFAULT
-	INFO    = DEFAULT
-	WARN    = DEFAULT
-	ERROR   = DEFAULT
+	// Delimiters to use when rendering templates
+	TemplateDelims string
 
-	// Revel runs every function in this array after init.
-	InitHooks []func()
+	// Loggers
+	TRACE = log.New(ioutil.Discard, "TRACE ", log.Ldate|log.Ltime|log.Lshortfile)
+	INFO  = log.New(ioutil.Discard, "INFO  ", log.Ldate|log.Ltime|log.Lshortfile)
+	WARN  = log.New(ioutil.Discard, "WARN  ", log.Ldate|log.Ltime|log.Lshortfile)
+	ERROR = log.New(os.Stderr, "ERROR ", log.Ldate|log.Ltime|log.Lshortfile)
+
+	Initialized bool
 
 	// Private
-	revelInit bool
-	secretKey []byte
+	secretKey []byte // Key used to sign cookies. An empty key disables signing.
+	packaged  bool   // If true, this is running from a pre-built package.
 )
 
 func init() {
-	log.SetFlags(DEFAULT.Flags())
+	log.SetFlags(INFO.Flags())
 }
 
 // Init initializes Revel -- it provides paths for getting around the app.
@@ -79,14 +85,21 @@ func init() {
 func Init(mode, importPath, srcPath string) {
 	// Ignore trailing slashes.
 	ImportPath = strings.TrimRight(importPath, "/")
-	SourcePath = strings.TrimRight(srcPath, "/")
+	SourcePath = srcPath
 	RunMode = mode
 
+	// If the SourcePath is not specified, find it using build.Import.
+	var revelSourcePath string // may be different from the app source path
 	if SourcePath == "" {
-		SourcePath = findSrcPath(importPath)
+		revelSourcePath, SourcePath = findSrcPaths(importPath)
+	} else {
+		// If the SourcePath was specified, assume both Revel and the app are within it.
+		SourcePath = path.Clean(SourcePath)
+		revelSourcePath = SourcePath
+		packaged = true
 	}
 
-	RevelPath = path.Join(SourcePath, filepath.FromSlash(REVEL_IMPORT_PATH))
+	RevelPath = path.Join(revelSourcePath, filepath.FromSlash(REVEL_IMPORT_PATH))
 	BasePath = path.Join(SourcePath, filepath.FromSlash(importPath))
 	AppPath = path.Join(BasePath, "app")
 	ViewsPath = path.Join(AppPath, "views")
@@ -120,15 +133,27 @@ func Init(mode, importPath, srcPath string) {
 	Config.SetSection(mode)
 
 	// Configure properties from app.conf
+	DevMode = Config.BoolDefault("mode.dev", false)
 	HttpPort = Config.IntDefault("http.port", 9000)
 	HttpAddr = Config.StringDefault("http.addr", "")
+	HttpSsl = Config.BoolDefault("http.ssl", false)
+	HttpSslCert = Config.StringDefault("http.sslcert", "")
+	HttpSslKey = Config.StringDefault("http.sslkey", "")
+	if HttpSsl {
+		if HttpSslCert == "" {
+			log.Fatalln("No http.sslcert provided.")
+		}
+		if HttpSslKey == "" {
+			log.Fatalln("No http.sslkey provided.")
+		}
+	}
+
 	AppName = Config.StringDefault("app.name", "(not set)")
 	CookiePrefix = Config.StringDefault("cookie.prefix", "REVEL")
-	secretStr := Config.StringDefault("app.secret", "")
-	if secretStr == "" {
-		log.Fatalln("No app.secret provided.")
+	TemplateDelims = Config.StringDefault("template.delimiters", "")
+	if secretStr := Config.StringDefault("app.secret", ""); secretStr != "" {
+		secretKey = []byte(secretStr)
 	}
-	secretKey = []byte(secretStr)
 
 	// Configure logging.
 	TRACE = getLogger("trace")
@@ -138,11 +163,7 @@ func Init(mode, importPath, srcPath string) {
 
 	loadModules()
 
-	for _, hook := range InitHooks {
-		hook()
-	}
-
-	revelInit = true
+	Initialized = true
 }
 
 // Create a logger using log.* directives in app.conf plus the current settings
@@ -185,29 +206,39 @@ func getLogger(name string) *log.Logger {
 }
 
 func newLogger(wr io.Writer) *log.Logger {
-	return log.New(wr, DEFAULT.Prefix(), DEFAULT.Flags())
+	return log.New(wr, "", INFO.Flags())
 }
 
-// findSrcPath uses the "go/build" package to find the source root.
-func findSrcPath(importPath string) string {
+// findSrcPaths uses the "go/build" package to find the source root for Revel
+// and the app.
+func findSrcPaths(importPath string) (revelSourcePath, appSourcePath string) {
+	var (
+		gopaths = filepath.SplitList(build.Default.GOPATH)
+		goroot  = build.Default.GOROOT
+	)
+
+	if len(gopaths) == 0 {
+		ERROR.Fatalln("GOPATH environment variable is not set. ",
+			"Please refer to http://golang.org/doc/code.html to configure your Go environment.")
+	}
+
+	if ContainsString(gopaths, goroot) {
+		ERROR.Fatalf("GOPATH (%s) must not include your GOROOT (%s). "+
+			"Please refer to http://golang.org/doc/code.html to configure your Go environment.",
+			gopaths, goroot)
+	}
+
 	appPkg, err := build.Import(importPath, "", build.FindOnly)
 	if err != nil {
-		log.Fatalln("Failed to import", importPath, "with error:", err)
+		ERROR.Fatalln("Failed to import", importPath, "with error:", err)
 	}
 
 	revelPkg, err := build.Import(REVEL_IMPORT_PATH, "", build.FindOnly)
 	if err != nil {
-		log.Fatalln("Failed to find Revel with error:", err)
+		ERROR.Fatalln("Failed to find Revel with error:", err)
 	}
 
-	// Find the source path from each, and ensure they are equal.
-	if revelPkg.SrcRoot != appPkg.SrcRoot {
-		log.Fatalln("Revel must be installed in the same GOPATH as your app."+
-			"\nRevel source root:", revelPkg.SrcRoot,
-			"\nApp source root:", appPkg.SrcRoot)
-	}
-
-	return appPkg.SrcRoot
+	return revelPkg.SrcRoot, appPkg.SrcRoot
 }
 
 type Module struct {
@@ -221,23 +252,37 @@ func loadModules() {
 			continue
 		}
 
-		modPkg, err := build.Import(moduleImportPath, "", build.FindOnly)
+		modulePath, err := ResolveImportPath(moduleImportPath)
 		if err != nil {
 			log.Fatalln("Failed to load module.  Import of", moduleImportPath, "failed:", err)
 		}
-
-		addModule(key[len("module."):], moduleImportPath, modPkg.Dir)
+		addModule(key[len("module."):], moduleImportPath, modulePath)
 	}
+}
+
+// ResolveImportPath returns the filesystem path for the given import path.
+// Returns an error if the import path could not be found.
+func ResolveImportPath(importPath string) (string, error) {
+	if packaged {
+		return path.Join(SourcePath, importPath), nil
+	}
+
+	modPkg, err := build.Import(importPath, "", build.FindOnly)
+	if err != nil {
+		return "", err
+	}
+	return modPkg.Dir, nil
 }
 
 func addModule(name, importPath, modulePath string) {
 	Modules = append(Modules, Module{Name: name, ImportPath: importPath, Path: modulePath})
 	if codePath := path.Join(modulePath, "app"); DirExists(codePath) {
 		CodePaths = append(CodePaths, codePath)
+		if viewsPath := path.Join(modulePath, "app", "views"); DirExists(viewsPath) {
+			TemplatePaths = append(TemplatePaths, viewsPath)
+		}
 	}
-	if viewsPath := path.Join(modulePath, "app", "views"); DirExists(viewsPath) {
-		TemplatePaths = append(TemplatePaths, viewsPath)
-	}
+
 	INFO.Print("Loaded module ", path.Base(modulePath))
 
 	// Hack: There is presently no way for the testrunner module to add the
@@ -247,8 +292,18 @@ func addModule(name, importPath, modulePath string) {
 	}
 }
 
+// ModuleByName returns the module of the given name, if loaded.
+func ModuleByName(name string) (m Module, found bool) {
+	for _, module := range Modules {
+		if module.Name == name {
+			return module, true
+		}
+	}
+	return Module{}, false
+}
+
 func CheckInit() {
-	if !revelInit {
+	if !Initialized {
 		panic("Revel has not been initialized!")
 	}
 }

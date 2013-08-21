@@ -8,8 +8,8 @@ import (
 type Event struct {
 	Type      string // "join", "leave", or "message"
 	User      string
-	Timestamp int    // Unix timestmap (secs)
-	Text      string // What the user said (if Type == "say")
+	Timestamp int    // Unix timestamp (secs)
+	Text      string // What the user said (if Type == "message")
 }
 
 type Subscription struct {

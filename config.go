@@ -1,8 +1,8 @@
-package rev
+package revel
 
 import (
 	"errors"
-	"github.com/robfig/goconfig/config"
+	"github.com/robfig/config"
 	"path"
 	"strings"
 )
@@ -28,6 +28,10 @@ func LoadConfig(confName string) (*MergedConfig, error) {
 		err = errors.New("not found")
 	}
 	return nil, err
+}
+
+func (c *MergedConfig) Raw() *config.Config {
+	return c.config
 }
 
 func (c *MergedConfig) SetSection(section string) {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/robfig/revel"
-	"github.com/robfig/revel/modules/testrunner/app"
 	"html"
 	"html/template"
 	"reflect"
@@ -12,7 +11,7 @@ import (
 )
 
 type TestRunner struct {
-	*rev.Controller
+	*revel.Controller
 }
 
 type TestSuiteDesc struct {
@@ -31,25 +30,26 @@ type TestSuiteResult struct {
 }
 
 type TestResult struct {
-	Name      string
-	Passed    bool
-	ErrorHtml template.HTML
+	Name         string
+	Passed       bool
+	ErrorHtml    template.HTML
+	ErrorSummary string
 }
 
 var NONE = []reflect.Value{}
 
-func (c TestRunner) Index() rev.Result {
+func (c TestRunner) Index() revel.Result {
 	var testSuites []TestSuiteDesc
-	for _, testSuite := range rev.TestSuites {
+	for _, testSuite := range revel.TestSuites {
 		testSuites = append(testSuites, DescribeSuite(testSuite))
 	}
 	return c.Render(testSuites)
 }
 
-// Run runs a single test, given by the argument. 
-func (c TestRunner) Run(suite, test string) rev.Result {
+// Run runs a single test, given by the argument.
+func (c TestRunner) Run(suite, test string) revel.Result {
 	result := TestResult{Name: test}
-	for _, testSuite := range rev.TestSuites {
+	for _, testSuite := range revel.TestSuites {
 		t := reflect.TypeOf(testSuite).Elem()
 		if t.Name() != suite {
 			continue
@@ -60,13 +60,14 @@ func (c TestRunner) Run(suite, test string) rev.Result {
 		func() {
 			defer func() {
 				if err := recover(); err != nil {
-					error := rev.NewErrorFromPanic(err)
+					error := revel.NewErrorFromPanic(err)
 					if error == nil {
 						result.ErrorHtml = template.HTML(html.EscapeString(fmt.Sprint(err)))
 					} else {
 						var buffer bytes.Buffer
-						tmpl, _ := rev.MainTemplateLoader.Template("TestRunner/FailureDetail.html")
+						tmpl, _ := revel.MainTemplateLoader.Template("TestRunner/FailureDetail.html")
 						tmpl.Render(&buffer, error)
+						result.ErrorSummary = errorSummary(error)
 						result.ErrorHtml = template.HTML(buffer.String())
 					}
 				}
@@ -74,16 +75,18 @@ func (c TestRunner) Run(suite, test string) rev.Result {
 
 			// Initialize the test suite with a NewTestSuite()
 			testSuiteInstance := v.Elem().FieldByName("TestSuite")
-			testSuiteInstance.Set(reflect.ValueOf(rev.NewTestSuite()))
+			testSuiteInstance.Set(reflect.ValueOf(revel.NewTestSuite()))
 
 			// Call Before(), call the test, and call After().
 			if m := v.MethodByName("Before"); m.IsValid() {
 				m.Call(NONE)
 			}
-			v.MethodByName(test).Call(NONE)
+
 			if m := v.MethodByName("After"); m.IsValid() {
-				m.Call(NONE)
+				defer m.Call(NONE)
 			}
+
+			v.MethodByName(test).Call(NONE)
 
 			// No panic means success.
 			result.Passed = true
@@ -95,19 +98,19 @@ func (c TestRunner) Run(suite, test string) rev.Result {
 
 // List returns a JSON list of test suites and tests.
 // Used by the "test" command line tool.
-func (c TestRunner) List() rev.Result {
+func (c TestRunner) List() revel.Result {
 	var testSuites []TestSuiteDesc
-	for _, testSuite := range rev.TestSuites {
+	for _, testSuite := range revel.TestSuites {
 		testSuites = append(testSuites, DescribeSuite(testSuite))
 	}
 	return c.RenderJson(testSuites)
 }
 
 func DescribeSuite(testSuite interface{}) TestSuiteDesc {
-	t := reflect.TypeOf(testSuite).Elem()
+	t := reflect.TypeOf(testSuite)
 
 	// Get a list of methods of the embedded test type.
-	super := t.Field(0).Type
+	super := t.Elem().Field(0).Type
 	superMethodNameSet := map[string]struct{}{}
 	for i := 0; i < super.NumMethod(); i++ {
 		superMethodNameSet[super.Method(i).Name] = struct{}{}
@@ -130,11 +133,20 @@ func DescribeSuite(testSuite interface{}) TestSuiteDesc {
 	}
 
 	return TestSuiteDesc{
-		Name:  t.Name(),
+		Name:  t.Elem().Name(),
 		Tests: tests,
 	}
 }
 
-func init() {
-	rev.RegisterPlugin(app.TestRunnerPlugin{})
+func errorSummary(error *revel.Error) string {
+	var message = fmt.Sprintf("%4sStatus: %s\n%4sIn %s", "", error.Description, "", error.Path)
+	if error.Line != 0 {
+		message += fmt.Sprintf(" (around line %d): ", error.Line)
+		for _, line := range error.ContextSource() {
+			if line.IsError {
+				message += line.Source
+			}
+		}
+	}
+	return message
 }

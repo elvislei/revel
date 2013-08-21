@@ -1,10 +1,9 @@
-package rev
+package revel
 
 import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"testing"
 )
 
@@ -12,127 +11,78 @@ import (
 // the expected Route object.
 var routeTestCases = map[string]*Route{
 	"get / Application.Index": &Route{
-		Method:        "GET",
-		Path:          "/",
-		Action:        "Application.Index",
-		pathPattern:   regexp.MustCompile("/$"),
-		staticDir:     "",
-		args:          []*arg{},
-		actionPattern: regexp.MustCompile("Application\\.Index"),
+		Method:      "GET",
+		Path:        "/",
+		Action:      "Application.Index",
+		FixedParams: []string{},
 	},
 
-	"post /app/{id} Application.SaveApp": &Route{
+	"post /app/:id Application.SaveApp": &Route{
 		Method:      "POST",
-		Path:        "/app/{id}",
+		Path:        "/app/:id",
 		Action:      "Application.SaveApp",
-		pathPattern: regexp.MustCompile("/app/(?P<id>[^/]+)$"),
-		staticDir:   "",
-		args: []*arg{
-			{
-				name:       "id",
-				constraint: regexp.MustCompile("[^/]+"),
-			},
+		FixedParams: []string{},
+	},
+
+	"get /app/ Application.List": &Route{
+		Method:      "GET",
+		Path:        "/app/",
+		Action:      "Application.List",
+		FixedParams: []string{},
+	},
+
+	`get /apps/:appId/ Application.Show`: &Route{
+		Method:      "GET",
+		Path:        `/apps/:appId/`,
+		Action:      "Application.Show",
+		FixedParams: []string{},
+	},
+
+	`GET /public/:filepath   Static.Serve("public")`: &Route{
+		Method: "GET",
+		Path:   "/public/:filepath",
+		Action: "Static.Serve",
+		FixedParams: []string{
+			"public",
 		},
-		actionPattern: regexp.MustCompile("Application\\.SaveApp"),
 	},
 
-	"post /app/{<[0-9]+>id} Application.SaveApp": &Route{
-		Method:      "POST",
-		Path:        "/app/{<[0-9]+>id}",
-		Action:      "Application.SaveApp",
-		pathPattern: regexp.MustCompile("/app/(?P<id>[0-9]+)$"),
-		staticDir:   "",
-		args: []*arg{
-			{
-				name:       "id",
-				constraint: regexp.MustCompile("[0-9]+"),
-			},
+	`GET /javascript/:filepath Static.Serve("public/js")`: &Route{
+		Method: "GET",
+		Path:   "/javascript/:filepath",
+		Action: "Static.Serve",
+		FixedParams: []string{
+			"public",
 		},
-		actionPattern: regexp.MustCompile("Application\\.SaveApp"),
 	},
 
-	"get /app/? Application.List": &Route{
-		Method:        "GET",
-		Path:          "/app/?",
-		Action:        "Application.List",
-		pathPattern:   regexp.MustCompile("/app/?$"),
-		staticDir:     "",
-		args:          []*arg{},
-		actionPattern: regexp.MustCompile("Application\\.List"),
-	},
-
-	"GET /public/ staticDir:www": &Route{
-		Method:        "GET",
-		Path:          "/public/",
-		Action:        "staticDir:www",
-		pathPattern:   regexp.MustCompile("^/public/(.*)$"),
-		staticDir:     "www",
-		args:          []*arg{},
-		actionPattern: nil,
-	},
-
-	"* /apps/{id}/{action} Application.{action}": &Route{
+	"* /apps/:id/:action Application.:action": &Route{
 		Method:      "*",
-		Path:        "/apps/{id}/{action}",
-		Action:      "Application.{action}",
-		pathPattern: regexp.MustCompile("/apps/(?P<id>[^/]+)/(?P<action>[^/]+)$"),
-		staticDir:   "",
-		args: []*arg{
-			{
-				name:       "id",
-				constraint: regexp.MustCompile("[^/]+"),
-			},
-			{
-				name:       "action",
-				constraint: regexp.MustCompile("[^/]+"),
-			},
-		},
-		actionPattern: regexp.MustCompile("Application\\.(?P<action>[^/]+)"),
+		Path:        "/apps/:id/:action",
+		Action:      "Application.:action",
+		FixedParams: []string{},
 	},
 
-	"* /{controller}/{action} {controller}.{action}": &Route{
+	"* /:controller/:action :controller.:action": &Route{
 		Method:      "*",
-		Path:        "/{controller}/{action}",
-		Action:      "{controller}.{action}",
-		pathPattern: regexp.MustCompile("/(?P<controller>[^/]+)/(?P<action>[^/]+)$"),
-		staticDir:   "",
-		args: []*arg{
-			{
-				name:       "controller",
-				constraint: regexp.MustCompile("[^/]+"),
-			},
-			{
-				name:       "action",
-				constraint: regexp.MustCompile("[^/]+"),
-			},
-		},
-		actionPattern: regexp.MustCompile("(?P<controller>[^/]+)\\.(?P<action>[^/]+)"),
+		Path:        "/:controller/:action",
+		Action:      ":controller.:action",
+		FixedParams: []string{},
 	},
 }
 
 // Run the test cases above.
 func TestComputeRoute(t *testing.T) {
 	for routeLine, expected := range routeTestCases {
-		method, path, action, found := parseRouteLine(routeLine)
+		method, path, action, fixedArgs, found := parseRouteLine(routeLine)
 		if !found {
 			t.Error("Failed to parse route line:", routeLine)
 			continue
 		}
-		actual := NewRoute(method, path, action)
+		actual := NewRoute(method, path, action, fixedArgs, "", 0)
 		eq(t, "Method", actual.Method, expected.Method)
 		eq(t, "Path", actual.Path, expected.Path)
 		eq(t, "Action", actual.Action, expected.Action)
-		eq(t, "pathPattern", fmt.Sprint(actual.pathPattern), fmt.Sprint(expected.pathPattern))
-		eq(t, "staticDir", actual.staticDir, expected.staticDir)
-		eq(t, "len(args)", len(actual.args), len(expected.args))
-		for i, arg := range actual.args {
-			if len(expected.args) <= i {
-				break
-			}
-			eq(t, "arg.name", arg.name, expected.args[i].name)
-			eq(t, "arg.constraint", arg.constraint.String(), expected.args[i].constraint.String())
-		}
-		eq(t, "actionPattern", fmt.Sprint(actual.actionPattern), fmt.Sprint(expected.actionPattern))
 		if t.Failed() {
 			t.Fatal("Failed on route:", routeLine)
 		}
@@ -143,14 +93,15 @@ func TestComputeRoute(t *testing.T) {
 
 const TEST_ROUTES = `
 # This is a comment
-GET  /                       Application.Index
-GET  /app/{id}               Application.Show
-POST /app/{id}               Application.Save
+GET   /                          Application.Index
+GET   /app/:id/                  Application.Show
+POST  /app/:id                   Application.Save
+PATCH /app/:id/                  Application.Update
+GET   /javascript/:filepath      Static.Serve("public/js")
+GET   /public/*filepath          Static.Serve("public")
+*     /:controller/:action       :controller.:action
 
-GET	/public/	                staticDir:www
-*		/{controller}/{action}		{controller}.{action}
-
-GET  /favicon.ico            404
+GET   /favicon.ico               404
 `
 
 var routeMatchTestCases = map[*http.Request]*RouteMatch{
@@ -160,8 +111,8 @@ var routeMatchTestCases = map[*http.Request]*RouteMatch{
 	}: &RouteMatch{
 		ControllerName: "Application",
 		MethodName:     "Index",
-		Params:         map[string]string{},
-		StaticFilename: "",
+		FixedParams:    []string{},
+		Params:         map[string][]string{},
 	},
 
 	&http.Request{
@@ -169,9 +120,19 @@ var routeMatchTestCases = map[*http.Request]*RouteMatch{
 		URL:    &url.URL{Path: "/app/123"},
 	}: &RouteMatch{
 		ControllerName: "Application",
-		MethodName:     "ShowApp",
-		Params:         map[string]string{"id": "123"},
-		StaticFilename: "",
+		MethodName:     "Show",
+		FixedParams:    []string{},
+		Params:         map[string][]string{"id": {"123"}},
+	},
+
+	&http.Request{
+		Method: "PATCH",
+		URL:    &url.URL{Path: "/app/123"},
+	}: &RouteMatch{
+		ControllerName: "Application",
+		MethodName:     "Update",
+		FixedParams:    []string{},
+		Params:         map[string][]string{"id": {"123"}},
 	},
 
 	&http.Request{
@@ -179,19 +140,39 @@ var routeMatchTestCases = map[*http.Request]*RouteMatch{
 		URL:    &url.URL{Path: "/app/123"},
 	}: &RouteMatch{
 		ControllerName: "Application",
-		MethodName:     "SaveApp",
-		Params:         map[string]string{"id": "123"},
-		StaticFilename: "",
+		MethodName:     "Save",
+		FixedParams:    []string{},
+		Params:         map[string][]string{"id": {"123"}},
 	},
 
 	&http.Request{
 		Method: "GET",
-		URL:    &url.URL{Path: "/public/style.css"},
+		URL:    &url.URL{Path: "/app/123/"},
 	}: &RouteMatch{
-		ControllerName: "",
-		MethodName:     "",
-		Params:         map[string]string{},
-		StaticFilename: "www/style.css",
+		ControllerName: "Application",
+		MethodName:     "Show",
+		FixedParams:    []string{},
+		Params:         map[string][]string{"id": {"123"}},
+	},
+
+	&http.Request{
+		Method: "GET",
+		URL:    &url.URL{Path: "/public/css/style.css"},
+	}: &RouteMatch{
+		ControllerName: "Static",
+		MethodName:     "Serve",
+		FixedParams:    []string{"public"},
+		Params:         map[string][]string{"filepath": {"css/style.css"}},
+	},
+
+	&http.Request{
+		Method: "GET",
+		URL:    &url.URL{Path: "/javascript/sessvars.js"},
+	}: &RouteMatch{
+		ControllerName: "Static",
+		MethodName:     "Serve",
+		FixedParams:    []string{"public/js"},
+		Params:         map[string][]string{"filepath": {"sessvars.js"}},
 	},
 
 	&http.Request{
@@ -200,8 +181,12 @@ var routeMatchTestCases = map[*http.Request]*RouteMatch{
 	}: &RouteMatch{
 		ControllerName: "Implicit",
 		MethodName:     "Route",
-		Params:         map[string]string{"controller": "Implicit", "action": "Route"},
-		StaticFilename: "",
+		FixedParams:    []string{},
+		Params: map[string][]string{
+			"METHOD":     {"GET"},
+			"controller": {"Implicit"},
+			"action":     {"Route"},
+		},
 	},
 
 	&http.Request{
@@ -211,26 +196,32 @@ var routeMatchTestCases = map[*http.Request]*RouteMatch{
 		ControllerName: "",
 		MethodName:     "",
 		Action:         "404",
-		Params:         map[string]string{},
-		StaticFilename: "",
+		FixedParams:    []string{},
+		Params:         map[string][]string{},
 	},
 }
 
 func TestRouteMatches(t *testing.T) {
+	BasePath = "/BasePath"
 	router := NewRouter("")
-	router.parse(TEST_ROUTES, false)
+	router.Routes, _ = parseRoutes("", TEST_ROUTES, false)
+	router.updateTree()
 	for req, expected := range routeMatchTestCases {
+		t.Log("Routing:", req.Method, req.URL)
 		actual := router.Route(req)
 		if !eq(t, "Found route", actual != nil, expected != nil) {
 			continue
 		}
 		eq(t, "ControllerName", actual.ControllerName, expected.ControllerName)
-		eq(t, "MethodName", actual.ControllerName, expected.ControllerName)
+		eq(t, "MethodName", actual.MethodName, expected.MethodName)
 		eq(t, "len(Params)", len(actual.Params), len(expected.Params))
 		for key, actualValue := range actual.Params {
-			eq(t, "Params", actualValue, expected.Params[key])
+			eq(t, "Params", actualValue[0], expected.Params[key][0])
 		}
-		eq(t, "StaticFilename", actual.StaticFilename, expected.StaticFilename)
+		eq(t, "len(FixedParams)", len(actual.FixedParams), len(expected.FixedParams))
+		for i, actualValue := range actual.FixedParams {
+			eq(t, "FixedParams", actualValue, expected.FixedParams[i])
+		}
 	}
 }
 
@@ -256,7 +247,7 @@ var reverseRoutingTestCases = map[*ReverseRouteArgs]*ActionDefinition{
 		action: "Application.Show",
 		args:   map[string]string{"id": "123"},
 	}: &ActionDefinition{
-		Url:    "/app/123",
+		Url:    "/app/123/",
 		Method: "GET",
 		Star:   false,
 		Action: "Application.Show",
@@ -285,7 +276,7 @@ var reverseRoutingTestCases = map[*ReverseRouteArgs]*ActionDefinition{
 
 func TestReverseRouting(t *testing.T) {
 	router := NewRouter("")
-	router.parse(TEST_ROUTES, false)
+	router.Routes, _ = parseRoutes("", TEST_ROUTES, false)
 	for routeArgs, expected := range reverseRoutingTestCases {
 		actual := router.Reverse(routeArgs.action, routeArgs.args)
 		if !eq(t, "Found route", actual != nil, expected != nil) {
@@ -295,6 +286,91 @@ func TestReverseRouting(t *testing.T) {
 		eq(t, "Method", actual.Method, expected.Method)
 		eq(t, "Star", actual.Star, expected.Star)
 		eq(t, "Action", actual.Action, expected.Action)
+	}
+}
+
+func BenchmarkRouter(b *testing.B) {
+	router := NewRouter("")
+	router.Routes, _ = parseRoutes("", TEST_ROUTES, false)
+	router.updateTree()
+	b.ResetTimer()
+	for i := 0; i < b.N/len(routeMatchTestCases); i++ {
+		for req, _ := range routeMatchTestCases {
+			r := router.Route(req)
+			if r == nil {
+				b.Errorf("Request not found: %s", req.URL.Path)
+			}
+		}
+	}
+}
+
+// The benchmark from github.com/ant0ine/go-urlrouter
+func BenchmarkLargeRouter(b *testing.B) {
+	router := NewRouter("")
+
+	routePaths := []string{
+		"/",
+		"/signin",
+		"/signout",
+		"/profile",
+		"/settings",
+		"/upload/*file",
+	}
+	for i := 0; i < 10; i++ {
+		for j := 0; j < 5; j++ {
+			routePaths = append(routePaths, fmt.Sprintf("/resource%d/:id/property%d", i, j))
+		}
+		routePaths = append(routePaths, fmt.Sprintf("/resource%d/:id", i))
+		routePaths = append(routePaths, fmt.Sprintf("/resource%d", i))
+	}
+	routePaths = append(routePaths, "/:any")
+
+	for _, p := range routePaths {
+		router.Routes = append(router.Routes,
+			NewRoute("GET", p, "Controller.Action", "", "", 0))
+	}
+	router.updateTree()
+
+	requestUrls := []string{
+		"http://example.org/",
+		"http://example.org/resource9/123",
+		"http://example.org/resource9/123/property1",
+		"http://example.org/doesnotexist",
+	}
+	var reqs []*http.Request
+	for _, url := range requestUrls {
+		req, _ := http.NewRequest("GET", url, nil)
+		reqs = append(reqs, req)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N/len(reqs); i++ {
+		for _, req := range reqs {
+			route := router.Route(req)
+			if route == nil {
+				b.Errorf("Failed to route: %s", req.URL.Path)
+			}
+		}
+	}
+}
+
+func BenchmarkRouterFilter(b *testing.B) {
+	startFakeBookingApp()
+	controllers := []*Controller{
+		{Request: NewRequest(showRequest)},
+		{Request: NewRequest(staticRequest)},
+	}
+	for _, c := range controllers {
+		c.Params = &Params{}
+		ParseParams(c.Params, c.Request)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N/len(controllers); i++ {
+		for _, c := range controllers {
+			RouterFilter(c, NilChain)
+		}
 	}
 }
 

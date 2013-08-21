@@ -1,7 +1,10 @@
-package rev
+package revel
 
 import (
+	"encoding/csv"
 	"fmt"
+	"github.com/robfig/pathtree"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -11,22 +14,24 @@ import (
 )
 
 type Route struct {
-	Method string // e.g. GET
-	Path   string // e.g. /app/{id}
-	Action string // e.g. Application.ShowApp
+	Method         string   // e.g. GET
+	Path           string   // e.g. /app/:id
+	Action         string   // e.g. "Application.ShowApp", "404"
+	ControllerName string   // e.g. "Application", ""
+	MethodName     string   // e.g. "ShowApp", ""
+	FixedParams    []string // e.g. "arg1","arg2","arg3" (CSV formatting)
+	TreePath       string   // e.g. "/GET/app/:id"
 
-	pathPattern   *regexp.Regexp // for matching the url path
-	staticDir     string         // e.g. "public" from action "staticDir:public"
-	args          []*arg         // e.g. {id} from path /app/{id}
-	actionPattern *regexp.Regexp
+	routesPath string // e.g. /Users/robfig/gocode/src/myapp/conf/routes
+	line       int    // e.g. 3
 }
 
 type RouteMatch struct {
-	Action         string            // e.g. Application.ShowApp
-	ControllerName string            // e.g. Application
-	MethodName     string            // e.g. ShowApp
-	Params         map[string]string // e.g. {id: 123}
-	StaticFilename string
+	Action         string // e.g. 404
+	ControllerName string // e.g. Application
+	MethodName     string // e.g. ShowApp
+	FixedParams    []string
+	Params         map[string][]string // e.g. {id: 123}
 }
 
 type arg struct {
@@ -35,189 +40,138 @@ type arg struct {
 	constraint *regexp.Regexp
 }
 
-var (
-	nakedPathParamRegex = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z_0-9]*)\}`)
-	argsPattern         = regexp.MustCompile(`\{<(?P<pattern>[^>]+)>(?P<var>[a-zA-Z_0-9]+)\}`)
-)
-
 // Prepares the route to be used in matching.
-func NewRoute(method, path, action string) (r *Route) {
-	r = &Route{
-		Method: strings.ToUpper(method),
-		Path:   path,
-		Action: action,
+func NewRoute(method, path, action, fixedArgs, routesPath string, line int) (r *Route) {
+	// Handle fixed arguments
+	argsReader := strings.NewReader(fixedArgs)
+	csv := csv.NewReader(argsReader)
+	fargs, err := csv.Read()
+	if err != nil && err != io.EOF {
+		ERROR.Printf("Invalid fixed parameters (%v): for string '%v'", err.Error(), fixedArgs)
 	}
 
-	// Handle static routes
-	if strings.HasPrefix(r.Action, "staticDir:") {
-		if r.Method != "*" && r.Method != "GET" {
-			WARN.Print("Static route only supports GET")
-			return
-		}
-
-		if !strings.HasSuffix(r.Path, "/") {
-			WARN.Printf("The path for staticDir must end with / (%s)", r.Path)
-			r.Path = r.Path + "/"
-		}
-
-		r.pathPattern = regexp.MustCompile("^" + r.Path + "(.*)$")
-		r.staticDir = r.Action[len("staticDir:"):]
-		// TODO: staticFile:
-		return
+	r = &Route{
+		Method:      strings.ToUpper(method),
+		Path:        path,
+		Action:      action,
+		FixedParams: fargs,
+		TreePath:    treePath(strings.ToUpper(method), path),
+		routesPath:  routesPath,
+		line:        line,
 	}
 
 	// URL pattern
-	// TODO: Support non-absolute paths
 	if !strings.HasPrefix(r.Path, "/") {
 		ERROR.Print("Absolute URL required.")
 		return
 	}
 
-	// Handle embedded arguments
-
-	// Convert path arguments with unspecified regexes to standard form.
-	// e.g. "/customer/{id}" => "/customer/{<[^/]+>id}
-	normPath := nakedPathParamRegex.ReplaceAllStringFunc(r.Path, func(m string) string {
-		var argMatches []string = nakedPathParamRegex.FindStringSubmatch(m)
-		return "{<[^/]+>" + argMatches[1] + "}"
-	})
-
-	// Go through the arguments
-	r.args = make([]*arg, 0, 3)
-	for i, m := range argsPattern.FindAllStringSubmatch(normPath, -1) {
-		r.args = append(r.args, &arg{
-			name:       string(m[2]),
-			index:      i,
-			constraint: regexp.MustCompile(string(m[1])),
-		})
+	actionSplit := strings.Split(action, ".")
+	if len(actionSplit) == 2 {
+		r.ControllerName = actionSplit[0]
+		r.MethodName = actionSplit[1]
 	}
 
-	// Now assemble the entire path regex, including the embedded parameters.
-	// e.g. /app/{<[^/]+>id} => /app/(?P<id>[^/]+)
-	pathPatternStr := argsPattern.ReplaceAllStringFunc(normPath, func(m string) string {
-		var argMatches []string = argsPattern.FindStringSubmatch(m)
-		return "(?P<" + argMatches[2] + ">" + argMatches[1] + ")"
-	})
-	r.pathPattern = regexp.MustCompile(pathPatternStr + "$")
-
-	// Handle action
-	var actionPatternStr string = strings.Replace(r.Action, ".", `\.`, -1)
-	for _, arg := range r.args {
-		var argName string = "{" + arg.name + "}"
-		if argIndex := strings.Index(actionPatternStr, argName); argIndex != -1 {
-			actionPatternStr = strings.Replace(actionPatternStr, argName,
-				"(?P<"+arg.name+">"+arg.constraint.String()+")", -1)
-		}
-	}
-	r.actionPattern = regexp.MustCompile(actionPatternStr)
 	return
 }
 
-// Return nil if no match.
-func (r *Route) Match(method string, reqPath string) *RouteMatch {
-	// Check the Method
-	if r.Method != "*" && method != r.Method && !(method == "HEAD" && r.Method == "GET") {
-		return nil
+func treePath(method, path string) string {
+	if method == "*" {
+		method = ":METHOD"
 	}
-
-	// Check the Path
-	var matches []string = r.pathPattern.FindStringSubmatch(reqPath)
-	if matches == nil {
-		return nil
-	}
-
-	// If it's a static file request..
-	if r.staticDir != "" {
-		// Check if it is specifying a module.. if so, look there instead.
-		// This is a tenative syntax: "staticDir:moduleName:(directory)"
-		var basePath, dirName string
-		if i := strings.Index(r.staticDir, ":"); i != -1 {
-			moduleName, dirName := r.staticDir[:i], r.staticDir[i+1:]
-			for _, module := range Modules {
-				if module.Name == moduleName {
-					basePath = path.Join(module.Path, dirName)
-				}
-			}
-			if basePath == "" {
-				ERROR.Print("No such module found: ", moduleName)
-				basePath = BasePath
-			}
-		} else {
-			basePath, dirName = BasePath, r.staticDir
-		}
-		return &RouteMatch{
-			StaticFilename: path.Join(basePath, dirName, matches[1]),
-		}
-	}
-
-	// Figure out the Param names.
-	params := make(map[string]string)
-	for i, m := range matches[1:] {
-		params[r.pathPattern.SubexpNames()[i+1]] = m
-	}
-
-	// If the action is variablized, replace into it with the captured args.
-	action := r.Action
-	if strings.Contains(action, "{") {
-		for key, value := range params {
-			action = strings.Replace(action, "{"+key+"}", value, -1)
-		}
-	}
-
-	// Special handling for explicit 404's.
-	if action == "404" {
-		return &RouteMatch{
-			Action: "404",
-		}
-	}
-
-	// Split the action into controller and method
-	actionSplit := strings.Split(action, ".")
-	if len(actionSplit) != 2 {
-		ERROR.Printf("Failed to split action: %s (matching route: %s)", action, r.Action)
-		return nil
-	}
-
-	return &RouteMatch{
-		Action:         action,
-		ControllerName: actionSplit[0],
-		MethodName:     actionSplit[1],
-		Params:         params,
-	}
+	return "/" + method + path
 }
 
 type Router struct {
 	Routes []*Route
-	path   string
+	Tree   *pathtree.Node
+	path   string // path to the routes file
 }
 
+var notFound = &RouteMatch{Action: "404"}
+
 func (router *Router) Route(req *http.Request) *RouteMatch {
+	leaf, expansions := router.Tree.Find(treePath(req.Method, req.URL.Path))
+	if leaf == nil {
+		return nil
+	}
+	route := leaf.Value.(*Route)
+
+	// Create a map of the route parameters.
+	var params url.Values
+	if len(expansions) > 0 {
+		params = make(url.Values)
+		for i, v := range expansions {
+			params[leaf.Wildcards[i]] = []string{v}
+		}
+	}
+
+	// Special handling for explicit 404's.
+	if route.Action == "404" {
+		return notFound
+	}
+
+	// If the action is variablized, replace into it with the captured args.
+	controllerName, methodName := route.ControllerName, route.MethodName
+	if controllerName[0] == ':' {
+		controllerName = params[controllerName[1:]][0]
+	}
+	if methodName[0] == ':' {
+		methodName = params[methodName[1:]][0]
+	}
+
+	return &RouteMatch{
+		ControllerName: controllerName,
+		MethodName:     methodName,
+		Params:         params,
+		FixedParams:    route.FixedParams,
+	}
+}
+
+// Refresh re-reads the routes file and re-calculates the routing table.
+// Returns an error if a specified action could not be found.
+func (router *Router) Refresh() (err *Error) {
+	router.Routes, err = parseRoutesFile(router.path, true)
+	if err != nil {
+		return
+	}
+	err = router.updateTree()
+	return
+}
+
+func (router *Router) updateTree() *Error {
+	router.Tree = pathtree.New()
 	for _, route := range router.Routes {
-		if m := route.Match(req.Method, req.URL.Path); m != nil {
-			return m
+		err := router.Tree.Add(route.TreePath, route)
+
+		// Allow GETs to respond to HEAD requests.
+		if err == nil && route.Method == "GET" {
+			err = router.Tree.Add(treePath("HEAD", route.Path), route)
+		}
+
+		// Error adding a route to the pathtree.
+		if err != nil {
+			return routeError(err, route.routesPath, "", route.line)
 		}
 	}
 	return nil
 }
 
-// Refresh re-reads the routes file and re-calculates the routing table.
-// Returns an error if a specified action could not be found.
-func (router *Router) Refresh() *Error {
-	// Get the routes file content.
-	contentBytes, err := ioutil.ReadFile(router.path)
+// parseRoutesFile reads the given routes file and returns the contained routes.
+func parseRoutesFile(routesPath string, validate bool) ([]*Route, *Error) {
+	contentBytes, err := ioutil.ReadFile(routesPath)
 	if err != nil {
-		return &Error{
+		return nil, &Error{
 			Title:       "Failed to load routes file",
 			Description: err.Error(),
 		}
 	}
-
-	return router.parse(string(contentBytes), true)
+	return parseRoutes(routesPath, string(contentBytes), validate)
 }
 
-// parse takes the content of a routes file and turns it into the routing table.
-func (router *Router) parse(content string, validate bool) *Error {
-	routes := make([]*Route, 0, 10)
+// parseRoutes reads the content of a routes file into the routing table.
+func parseRoutes(routesPath, content string, validate bool) ([]*Route, *Error) {
+	var routes []*Route
 
 	// For each line..
 	for n, line := range strings.Split(content, "\n") {
@@ -226,40 +180,38 @@ func (router *Router) parse(content string, validate bool) *Error {
 			continue
 		}
 
-		method, path, action, found := parseRouteLine(line)
+		// Handle included routes from modules.
+		// e.g. "module:testrunner" imports all routes from that module.
+		if strings.HasPrefix(line, "module:") {
+			moduleRoutes, err := getModuleRoutes(line[len("module:"):], validate)
+			if err != nil {
+				return nil, routeError(err, routesPath, content, n)
+			}
+			routes = append(routes, moduleRoutes...)
+			continue
+		}
+
+		// A single route
+		method, path, action, fixedArgs, found := parseRouteLine(line)
 		if !found {
 			continue
 		}
 
-		route := NewRoute(method, path, action)
+		route := NewRoute(method, path, action, fixedArgs, routesPath, n)
 		routes = append(routes, route)
 
 		if validate {
-			if err := router.validate(route); err != nil {
-				err.Path = router.path
-				err.Line = n + 1
-				err.SourceLines = strings.Split(content, "\n")
-				return err
+			if err := validateRoute(route); err != nil {
+				return nil, routeError(err, routesPath, content, n)
 			}
 		}
 	}
 
-	router.Routes = routes
-	return nil
+	return routes, nil
 }
 
-// Check that every specified action exists.
-func (router *Router) validate(route *Route) *Error {
-	// Skip static routes
-	if route.staticDir != "" {
-		return nil
-	}
-
-	// Skip variable routes.
-	if strings.ContainsAny(route.Action, "{}") {
-		return nil
-	}
-
+// validateRoute checks that every specified action exists.
+func validateRoute(route *Route) error {
 	// Skip 404s
 	if route.Action == "404" {
 		return nil
@@ -268,52 +220,83 @@ func (router *Router) validate(route *Route) *Error {
 	// We should be able to load the action.
 	parts := strings.Split(route.Action, ".")
 	if len(parts) != 2 {
-		return &Error{
-			Title: "Route validation error",
-			Description: fmt.Sprintf("Expected two parts (Controller.Action), but got %d: %s",
-				len(parts), route.Action),
-		}
+		return fmt.Errorf("Expected two parts (Controller.Action), but got %d: %s",
+			len(parts), route.Action)
 	}
 
-	ct := LookupControllerType(parts[0])
-	if ct == nil {
-		return &Error{
-			Title:       "Route validation error",
-			Description: "Unrecognized controller: " + parts[0],
-		}
+	// Skip variable routes.
+	if parts[0][0] == ':' || parts[1][0] == ':' {
+		return nil
 	}
 
-	mt := ct.Method(parts[1])
-	if mt == nil {
-		return &Error{
-			Title:       "Route validation error",
-			Description: "Unrecognized method: " + parts[1],
-		}
+	var c Controller
+	if err := c.SetAction(parts[0], parts[1]); err != nil {
+		return err
 	}
+
 	return nil
+}
+
+// routeError adds context to a simple error message.
+func routeError(err error, routesPath, content string, n int) *Error {
+	if revelError, ok := err.(*Error); ok {
+		return revelError
+	}
+	// Load the route file content if necessary
+	if content == "" {
+		contentBytes, err := ioutil.ReadFile(routesPath)
+		if err != nil {
+			ERROR.Println("Failed to read route file %s: %s", routesPath, err)
+		} else {
+			content = string(contentBytes)
+		}
+	}
+	return &Error{
+		Title:       "Route validation error",
+		Description: err.Error(),
+		Path:        routesPath,
+		Line:        n + 1,
+		SourceLines: strings.Split(content, "\n"),
+	}
+}
+
+// getModuleRoutes loads the routes file for the given module and returns the
+// list of routes.
+func getModuleRoutes(moduleName string, validate bool) ([]*Route, *Error) {
+	// Look up the module.  It may be not found due to the common case of e.g. the
+	// testrunner module being active only in dev mode.
+	module, found := ModuleByName(moduleName)
+	if !found {
+		INFO.Println("Skipping routes for inactive module", moduleName)
+		return nil, nil
+	}
+	return parseRoutesFile(path.Join(module.Path, "conf", "routes"), validate)
 }
 
 // Groups:
 // 1: method
 // 4: path
 // 5: action
+// 6: fixedargs
 var routePattern *regexp.Regexp = regexp.MustCompile(
-	"(?i)^(GET|POST|PUT|DELETE|OPTIONS|HEAD|WS|\\*)" +
+	"(?i)^(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)" +
 		"[(]?([^)]*)(\\))?[ \t]+" +
-		"(.*/[^ \t]*)[ \t]+([^ \t(]+)(.+)?([ \t]*)$")
+		"(.*/[^ \t]*)[ \t]+([^ \t(]+)" +
+		`\(?([^)]*)\)?[ \t]*$`)
 
-func parseRouteLine(line string) (method, path, action string, found bool) {
+func parseRouteLine(line string) (method, path, action, fixedArgs string, found bool) {
 	var matches []string = routePattern.FindStringSubmatch(line)
 	if matches == nil {
 		return
 	}
-	method, path, action = matches[1], matches[4], matches[5]
+	method, path, action, fixedArgs = matches[1], matches[4], matches[5], matches[6]
 	found = true
 	return
 }
 
 func NewRouter(routesPath string) *Router {
 	return &Router{
+		Tree: pathtree.New(),
 		path: routesPath,
 	}
 }
@@ -329,53 +312,60 @@ func (a *ActionDefinition) String() string {
 }
 
 func (router *Router) Reverse(action string, argValues map[string]string) *ActionDefinition {
+	actionSplit := strings.Split(action, ".")
+	if len(actionSplit) != 2 {
+		ERROR.Print("revel/router: reverse router got invalid action ", action)
+		return nil
+	}
+	controllerName, methodName := actionSplit[0], actionSplit[1]
 
-NEXT_ROUTE:
-	// Loop through the routes.
 	for _, route := range router.Routes {
-		if route.actionPattern == nil {
+		// Skip routes without either a ControllerName or MethodName
+		if route.ControllerName == "" || route.MethodName == "" {
 			continue
 		}
 
-		var matches []string = route.actionPattern.FindStringSubmatch(action)
-		if len(matches) == 0 {
+		// Check that the action matches or is a wildcard.
+		controllerWildcard := route.ControllerName[0] == ':'
+		methodWildcard := route.MethodName[0] == ':'
+		if (!controllerWildcard && route.ControllerName != controllerName) ||
+			(!methodWildcard && route.MethodName != methodName) {
 			continue
 		}
-
-		for i, match := range matches[1:] {
-			argValues[route.actionPattern.SubexpNames()[i+1]] = match
+		if controllerWildcard {
+			argValues[route.ControllerName[1:]] = controllerName
 		}
-
-		// Create a lookup for the route args.
-		routeArgs := make(map[string]*arg)
-		for _, arg := range route.args {
-			routeArgs[arg.name] = arg
-		}
-
-		// Enforce the constraints on the arg values.
-		for argKey, argValue := range argValues {
-			arg, ok := routeArgs[argKey]
-			if ok && !arg.constraint.MatchString(argValue) {
-				continue NEXT_ROUTE
-			}
+		if methodWildcard {
+			argValues[route.MethodName[1:]] = methodName
 		}
 
 		// Build up the URL.
-		var queryValues url.Values = make(url.Values)
-		path := route.Path
-		for argKey, argValue := range argValues {
-			if _, ok := routeArgs[argKey]; ok {
-				// If this arg goes into the path, put it in.
-				path = regexp.MustCompile(`\{(<[^>]+>)?`+regexp.QuoteMeta(argKey)+`\}`).
-					ReplaceAllString(path, url.QueryEscape(string(argValue)))
-			} else {
-				// Else, add it to the query string.
-				queryValues.Set(argKey, argValue)
+		var (
+			queryValues  = make(url.Values)
+			pathElements = strings.Split(route.Path, "/")
+		)
+		for i, el := range pathElements {
+			if el == "" || el[0] != ':' {
+				continue
 			}
+
+			val, ok := argValues[el[1:]]
+			if !ok {
+				val = "<nil>"
+				ERROR.Print("revel/router: reverse route missing route arg ", el[1:])
+			}
+			pathElements[i] = val
+			delete(argValues, el[1:])
+			continue
+		}
+
+		// Add any args that were not inserted into the path into the query string.
+		for k, v := range argValues {
+			queryValues.Set(k, v)
 		}
 
 		// Calculate the final URL and Method
-		url := path
+		url := strings.Join(pathElements, "/")
 		if len(queryValues) > 0 {
 			url += "?" + queryValues.Encode()
 		}
@@ -398,4 +388,56 @@ NEXT_ROUTE:
 	}
 	ERROR.Println("Failed to find reverse route:", action, argValues)
 	return nil
+}
+
+func init() {
+	OnAppStart(func() {
+		MainRouter = NewRouter(path.Join(BasePath, "conf", "routes"))
+		if MainWatcher != nil && Config.BoolDefault("watch.routes", true) {
+			MainWatcher.Listen(MainRouter, MainRouter.path)
+		} else {
+			MainRouter.Refresh()
+		}
+	})
+}
+
+func RouterFilter(c *Controller, fc []Filter) {
+	// Figure out the Controller/Action
+	var route *RouteMatch = MainRouter.Route(c.Request.Request)
+	if route == nil {
+		c.Result = c.NotFound("No matching route found")
+		return
+	}
+
+	// The route may want to explicitly return a 404.
+	if route.Action == "404" {
+		c.Result = c.NotFound("(intentionally)")
+		return
+	}
+
+	// Set the action.
+	if err := c.SetAction(route.ControllerName, route.MethodName); err != nil {
+		c.Result = c.NotFound(err.Error())
+		return
+	}
+
+	// Add the route and fixed params to the Request Params.
+	c.Params.Route = route.Params
+
+	// Add the fixed parameters mapped by name.
+	// TODO: Pre-calculate this mapping.
+	for i, value := range route.FixedParams {
+		if c.Params.Fixed == nil {
+			c.Params.Fixed = make(url.Values)
+		}
+		if i < len(c.MethodType.Args) {
+			arg := c.MethodType.Args[i]
+			c.Params.Fixed.Set(arg.Name, value)
+		} else {
+			WARN.Println("Too many parameters to", route.Action, "trying to add", value)
+			break
+		}
+	}
+
+	fc[0](c, fc[1:])
 }

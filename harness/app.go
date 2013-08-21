@@ -2,11 +2,13 @@ package harness
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/robfig/revel"
 	"io"
 	"os"
 	"os/exec"
+	"time"
 )
 
 // App contains the configuration for running a Revel app.  (Not for the app itself)
@@ -33,7 +35,7 @@ func (a *App) Kill() {
 }
 
 // AppCmd manages the running of a Revel app server.
-// It requires rev.Init to have been called previously.
+// It requires revel.Init to have been called previously.
 type AppCmd struct {
 	*exec.Cmd
 }
@@ -41,40 +43,62 @@ type AppCmd struct {
 func NewAppCmd(binPath string, port int) AppCmd {
 	cmd := exec.Command(binPath,
 		fmt.Sprintf("-port=%d", port),
-		fmt.Sprintf("-importPath=%s", rev.ImportPath),
-		fmt.Sprintf("-runMode=%s", rev.RunMode))
+		fmt.Sprintf("-importPath=%s", revel.ImportPath),
+		fmt.Sprintf("-runMode=%s", revel.RunMode))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return AppCmd{cmd}
 }
 
 // Start the app server, and wait until it is ready to serve requests.
-func (cmd AppCmd) Start() {
+func (cmd AppCmd) Start() error {
 	listeningWriter := startupListeningWriter{os.Stdout, make(chan bool)}
 	cmd.Stdout = listeningWriter
-	rev.TRACE.Println("Exec app:", cmd.Path, cmd.Args)
+	revel.TRACE.Println("Exec app:", cmd.Path, cmd.Args)
 	if err := cmd.Cmd.Start(); err != nil {
-		rev.ERROR.Fatalln("Error running:", err)
+		revel.ERROR.Fatalln("Error running:", err)
 	}
-	<-listeningWriter.notifyReady
+
+	select {
+	case <-cmd.waitChan():
+		return errors.New("revel/harness: app died")
+
+	case <-time.After(30 * time.Second):
+		cmd.Kill()
+		return errors.New("revel/harness: app timed out")
+
+	case <-listeningWriter.notifyReady:
+		return nil
+	}
+	panic("Impossible")
 }
 
 // Run the app server inline.  Never returns.
 func (cmd AppCmd) Run() {
-	rev.TRACE.Println("Exec app:", cmd.Path, cmd.Args)
+	revel.TRACE.Println("Exec app:", cmd.Path, cmd.Args)
 	if err := cmd.Cmd.Run(); err != nil {
-		rev.ERROR.Fatalln("Error running:", err)
+		revel.ERROR.Fatalln("Error running:", err)
 	}
 }
 
 // Terminate the app server if it's running.
 func (cmd AppCmd) Kill() {
 	if cmd.Cmd != nil && (cmd.ProcessState == nil || !cmd.ProcessState.Exited()) {
-		rev.TRACE.Println("Killing revel server pid", cmd.Process.Pid)
+		revel.TRACE.Println("Killing revel server pid", cmd.Process.Pid)
 		err := cmd.Process.Kill()
 		if err != nil {
-			rev.ERROR.Fatalln("Failed to kill revel server:", err)
+			revel.ERROR.Fatalln("Failed to kill revel server:", err)
 		}
 	}
+}
+
+// Return a channel that is notified when Wait() returns.
+func (cmd AppCmd) waitChan() <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	go func() {
+		cmd.Wait()
+		ch <- struct{}{}
+	}()
+	return ch
 }
 
 // A io.Writer that copies to the destination, and listens for "Listening on.."

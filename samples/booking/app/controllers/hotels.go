@@ -2,59 +2,42 @@ package controllers
 
 import (
 	"code.google.com/p/go.crypto/bcrypt"
-	"database/sql"
 	"fmt"
 	"github.com/robfig/revel"
 	"github.com/robfig/revel/samples/booking/app/models"
+	"github.com/robfig/revel/samples/booking/app/routes"
 	"strings"
-	"time"
 )
 
-func checkUser(c *rev.Controller) rev.Result {
-	if user := connected(c); user == nil {
+type Hotels struct {
+	Application
+}
+
+func (c Hotels) checkUser() revel.Result {
+	if user := c.connected(); user == nil {
 		c.Flash.Error("Please log in first")
-		return c.Redirect(Application.Index)
+		return c.Redirect(routes.Application.Index())
 	}
 	return nil
 }
 
-type Hotels struct {
-	*rev.Controller
-}
-
-func (c Hotels) Index() rev.Result {
-	rows, err := c.Txn.Query(`
-select BookingId, UserId, HotelId, CheckInDate, CheckOutDate,
-       CardNumber, NameOnCard, CardExpMonth, CardExpYear, Smoking, Beds
-  from Booking
- where UserId = ?`, connected(c.Controller).UserId)
+func (c Hotels) Index() revel.Result {
+	results, err := c.Txn.Select(models.Booking{},
+		`select * from Booking where UserId = ?`, c.connected().UserId)
 	if err != nil {
 		panic(err)
 	}
-	defer rows.Close()
 
 	var bookings []*models.Booking
-	var checkInDate, checkOutDate string
-	for rows.Next() {
-		b := &models.Booking{}
-		err := rows.Scan(&b.BookingId, &b.UserId, &b.HotelId, &checkInDate, &checkOutDate,
-			&b.CardNumber, &b.NameOnCard, &b.CardExpMonth, &b.CardExpYear, &b.Smoking, &b.Beds)
-		if err != nil {
-			panic(err)
-		}
-		b.CheckInDate, _ = time.Parse("2006-01-02", checkInDate)
-		b.CheckOutDate, _ = time.Parse("2006-01-02", checkOutDate)
+	for _, r := range results {
+		b := r.(*models.Booking)
 		bookings = append(bookings, b)
-	}
-
-	for _, b := range bookings {
-		b.Hotel = c.loadHotelById(b.HotelId)
 	}
 
 	return c.Render(bookings)
 }
 
-func (c Hotels) List(search string, size, page int) rev.Result {
+func (c Hotels) List(search string, size, page int) revel.Result {
 	if page == 0 {
 		page = 1
 	}
@@ -63,68 +46,54 @@ func (c Hotels) List(search string, size, page int) rev.Result {
 
 	var hotels []*models.Hotel
 	if search == "" {
-		hotels = loadHotels(c.Txn.Query(`
-select HotelId, Name, Address, City, State, Zip, Country, Price
-  from Hotel
- limit ?, ?`, (page-1)*size, size))
+		hotels = loadHotels(c.Txn.Select(models.Hotel{},
+			`select * from Hotel limit ?, ?`, (page-1)*size, size))
 	} else {
 		search = strings.ToLower(search)
-		hotels = loadHotels(c.Txn.Query(`
-select HotelId, Name, Address, City, State, Zip, Country, Price
-  from Hotel
- where lower(Name) like ? or lower(City) like ?
+		hotels = loadHotels(c.Txn.Select(models.Hotel{},
+			`select * from Hotel where lower(Name) like ? or lower(City) like ?
  limit ?, ?`, "%"+search+"%", "%"+search+"%", (page-1)*size, size))
 	}
 
 	return c.Render(hotels, search, size, page, nextPage)
 }
 
-func loadHotels(rows *sql.Rows, err error) []*models.Hotel {
+func loadHotels(results []interface{}, err error) []*models.Hotel {
 	if err != nil {
 		panic(err)
 	}
-	defer rows.Close()
 	var hotels []*models.Hotel
-	for rows.Next() {
-		h := &models.Hotel{}
-		err := rows.Scan(&h.HotelId, &h.Name,
-			&h.Address, &h.City, &h.State, &h.Zip, &h.Country, &h.Price)
-		if err != nil {
-			panic(err)
-		}
-		hotels = append(hotels, h)
+	for _, r := range results {
+		hotels = append(hotels, r.(*models.Hotel))
 	}
 	return hotels
 }
 
 func (c Hotels) loadHotelById(id int) *models.Hotel {
-	hotels := loadHotels(c.Txn.Query(`
-select HotelId, Name, Address, City, State, Zip, Country, Price
-  from Hotel
- where HotelId = ?`, id))
-	if len(hotels) == 0 {
+	h, err := c.Txn.Get(models.Hotel{}, id)
+	if err != nil {
+		panic(err)
+	}
+	if h == nil {
 		return nil
 	}
-	return hotels[0]
+	return h.(*models.Hotel)
 }
 
-func (c Hotels) Show(id int) rev.Result {
-	var title string
+func (c Hotels) Show(id int) revel.Result {
 	hotel := c.loadHotelById(id)
 	if hotel == nil {
-		title = "Not found"
-		// 	TODO: return c.NotFound("Hotel does not exist")
-	} else {
-		title = hotel.Name
+		return c.NotFound("Hotel %d does not exist", id)
 	}
+	title := hotel.Name
 	return c.Render(title, hotel)
 }
 
-func (c Hotels) Settings() rev.Result {
+func (c Hotels) Settings() revel.Result {
 	return c.Render()
 }
 
-func (c Hotels) SaveSettings(password, verifyPassword string) rev.Result {
+func (c Hotels) SaveSettings(password, verifyPassword string) revel.Result {
 	models.ValidatePassword(c.Validation, password)
 	c.Validation.Required(verifyPassword).
 		Message("Please verify your password")
@@ -132,79 +101,64 @@ func (c Hotels) SaveSettings(password, verifyPassword string) rev.Result {
 		Message("Your password doesn't match")
 	if c.Validation.HasErrors() {
 		c.Validation.Keep()
-		return c.Redirect(Hotels.Settings)
+		return c.Redirect(routes.Hotels.Settings())
 	}
 
 	bcryptPassword, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	_, err := c.Txn.Exec("update User set HashedPassword = ? where UserId = ?",
-		bcryptPassword, connected(c.Controller).UserId)
+		bcryptPassword, c.connected().UserId)
 	if err != nil {
 		panic(err)
 	}
 	c.Flash.Success("Password updated")
-	return c.Redirect(Hotels.Index)
+	return c.Redirect(routes.Hotels.Index())
 }
 
-func (c Hotels) ConfirmBooking(id int, booking models.Booking) rev.Result {
+func (c Hotels) ConfirmBooking(id int, booking models.Booking) revel.Result {
 	hotel := c.loadHotelById(id)
+	if hotel == nil {
+		return c.NotFound("Hotel %d does not exist", id)
+	}
+
 	title := fmt.Sprintf("Confirm %s booking", hotel.Name)
 	booking.Hotel = hotel
-	booking.User = connected(c.Controller)
+	booking.User = c.connected()
 	booking.Validate(c.Validation)
 
 	if c.Validation.HasErrors() || c.Params.Get("revise") != "" {
 		c.Validation.Keep()
 		c.FlashParams()
-		return c.Redirect("/hotels/%d/booking", id)
+		return c.Redirect(routes.Hotels.Book(id))
 	}
 
 	if c.Params.Get("confirm") != "" {
-		result, err := c.Txn.Exec(`
-insert into Booking (
-  UserId, HotelId, CheckInDate, CheckOutDate,
-  CardNumber, NameOnCard, CardExpMonth, CardExpYear,
-  Smoking, Beds
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			booking.User.UserId,
-			booking.Hotel.HotelId,
-			booking.CheckInDate.Format("2006-01-02"),
-			booking.CheckOutDate.Format("2006-01-02"),
-			booking.CardNumber,
-			booking.NameOnCard,
-			booking.CardExpMonth,
-			booking.CardExpYear,
-			booking.Smoking,
-			booking.Beds)
+		err := c.Txn.Insert(&booking)
 		if err != nil {
 			panic(err)
 		}
-		bookingId, _ := result.LastInsertId()
 		c.Flash.Success("Thank you, %s, your confirmation number for %s is %d",
-			booking.User.Name, hotel.Name, bookingId)
-		return c.Redirect(Hotels.Index)
+			booking.User.Name, hotel.Name, booking.BookingId)
+		return c.Redirect(routes.Hotels.Index())
 	}
 
 	return c.Render(title, hotel, booking)
 }
 
-func (c Hotels) CancelBooking(id int) rev.Result {
-	_, err := c.Txn.Exec("delete from Booking where BookingId = ?", id)
+func (c Hotels) CancelBooking(id int) revel.Result {
+	_, err := c.Txn.Delete(&models.Booking{BookingId: id})
 	if err != nil {
 		panic(err)
 	}
 	c.Flash.Success(fmt.Sprintln("Booking cancelled for confirmation number", id))
-	return c.Redirect(Hotels.Index)
+	return c.Redirect(routes.Hotels.Index())
 }
 
-func (c Hotels) Book(id int) rev.Result {
+func (c Hotels) Book(id int) revel.Result {
 	hotel := c.loadHotelById(id)
-	title := "Book " + hotel.Name
-	// if hotel == nil {
-	// 	return c.NotFound("Hotel does not exist")
-	// }
-	return c.Render(title, hotel)
-}
+	if hotel == nil {
+		return c.NotFound("Hotel %d does not exist", id)
+	}
 
-func init() {
-	rev.InterceptFunc(checkUser, rev.BEFORE, &Hotels{})
+	title := "Book " + hotel.Name
+	return c.Render(title, hotel)
 }
