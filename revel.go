@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	REVEL_IMPORT_PATH = "github.com/robfig/revel"
+	REVEL_IMPORT_PATH = "github.com/elvislei/revel"
 )
 
 var (

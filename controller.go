@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"session"
 	"reflect"
 	"runtime"
 	"strings"
@@ -20,6 +21,7 @@ type Controller struct {
 	MethodType    *MethodType     // A description of the invoked action type.
 	AppController interface{}     // The controller that was instantiated.
 	Action        string          // The fully qualified action name, e.g. "App.Index"
+
 
 	Request  *Request
 	Response *Response
