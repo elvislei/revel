@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"github.com/robfig/revel"
-	"github.com/robfig/revel/harness"
+	"github.com/elvislei/revel"
+	"github.com/elvislei/revel/harness"
 	"os"
 	"path"
 	"path/filepath"

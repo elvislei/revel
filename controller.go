@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"session"
+	"github.com/elvislei/revel/session"
 	"reflect"
 	"runtime"
 	"strings"
