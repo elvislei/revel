@@ -28,7 +28,7 @@ type Controller struct {
 	Result   Result
 
 	Flash      Flash                  // User cookie, cleared after 1 request.
-	Session    Session                // Session, stored in cookie, signed.
+	Session    session.SessionStore   // Session
 	Params     *Params                // Parameters from URL and form (including multipart).
 	Args       map[string]interface{} // Per-request scratch space.
 	RenderArgs map[string]interface{} // Args passed to the template.
@@ -47,6 +47,35 @@ func NewController(req *Request, resp *Response) *Controller {
 		},
 	}
 }
+
+func (c *Controller) StartSession() session.SessionStore {
+	if c.Session == nil {
+		c.Session = session.GlobalSessions.SessionStart(c.Response.Out, c.Request.Request)
+	}
+	return c.Session
+}
+
+func (c *Controller) SetSession(name interface{}, value interface{}) {
+	if c.Session == nil {
+		c.StartSession()
+	}
+	c.Session.Set(name, value)
+}
+
+func (c *Controller) GetSession(name interface{}) interface{} {
+	if c.Session == nil {
+		c.StartSession()
+	}
+	return c.Session.Get(name)
+}
+
+func (c *Controller) DelSession(name interface{}) {
+	if c.Session == nil {
+		c.StartSession()
+	}
+	c.Session.Delete(name)
+}
+
 
 func (c *Controller) FlashParams() {
 	for key, vals := range c.Params.Values {
