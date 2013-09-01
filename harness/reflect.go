@@ -4,7 +4,7 @@ package harness
 // It catalogs the controllers, their methods, and their arguments.
 
 import (
-	"github.com/robfig/revel"
+	"github.com/elvislei/revel"
 	"go/ast"
 	"go/build"
 	"go/parser"

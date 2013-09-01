@@ -1,7 +1,7 @@
 package cache
 
 import (
-	"github.com/robfig/revel"
+	"github.com/elvislei/revel"
 	"strings"
 	"time"
 )

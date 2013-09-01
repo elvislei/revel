@@ -1,31 +1,54 @@
-app.name={{ .AppName }}
-app.secret={{ .Secret }}
-http.addr=
-http.port=9000
-http.ssl=false
-http.sslcert=
-http.sslkey=
-cookie.prefix=REVEL
-format.date=01/02/2006
-format.datetime=01/02/2006 15:04
-results.chunked=false
+app.name        ={{ .AppName }}
+app.secret      ={{ .Secret }}
+http.addr       =
+http.port       =9000
+http.ssl        =false
+http.sslcert    =
+http.sslkey     =
+cookie.prefix   =REVEL
+format.date     = 01/02/2006
+format.datetime = 01/02/2006 15:04
+results.chunked = false
 
 log.trace.prefix = "TRACE "
 log.info.prefix  = "INFO  "
 log.warn.prefix  = "WARN  "
 log.error.prefix = "ERROR "
 
+#db.import = github.com/go-sql-driver/mysql
+#db.import = github.com/ziutek/mymysql/godrv
+
+#mall.db.driver = mysql
+mall.db.driver = mymysql
+
+#mall.db.spec   = root:admin@tcp(localhost:3306)/boru?charset=utf8
+mall.db.spec   = tcp:localhost:3306*boru/root/admin
+
+#portal.db.driver = mysql
+portal.db.driver = mymysql
+
+#portal.db.spec   = root:admin@tcp(localhost:3306)/portal?charset=utf8
+portal.db.spec   = tcp:localhost:3306*portal/root/admin
+
+
+session.on            = true
+#session default store in memory.Option:"memory","mysql","redis","file"
+session.provider      = "memory"  
+session.name          = "REVEL_SESSION_ID"
+session.lifetime 	  = 3600
+session.savePath      = ""
+
 # The default language of this application.
 i18n.default_language=en
 
-module.static=github.com/robfig/revel/modules/static
+module.static=github.com/elvislei/revel/modules/static
 
 [dev]
 mode.dev=true
 results.pretty=true
 watch=true
 
-module.testrunner = github.com/robfig/revel/modules/testrunner
+module.testrunner = github.com/elvislei/revel/modules/testrunner
 
 log.trace.output = off
 log.info.output  = stderr

@@ -1,7 +1,7 @@
 package revel
 
 import (
-	"github.com/robfig/config"
+	"github.com/elvislei/config"
 	"go/build"
 	"io"
 	"io/ioutil"
@@ -287,7 +287,7 @@ func addModule(name, importPath, modulePath string) {
 
 	// Hack: There is presently no way for the testrunner module to add the
 	// "test" subdirectory to the CodePaths.  So this does it instead.
-	if importPath == "github.com/robfig/revel/modules/testrunner" {
+	if importPath == "github.com/elvislei/revel/modules/testrunner" {
 		CodePaths = append(CodePaths, path.Join(BasePath, "tests"))
 	}
 }

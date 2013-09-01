@@ -2,7 +2,7 @@ package revel
 
 import (
 	"errors"
-	"github.com/robfig/config"
+	"github.com/elvislei/config"
 	"path"
 	"strings"
 )
@@ -46,6 +46,21 @@ func (c *MergedConfig) Int(option string) (result int, found bool) {
 	result, err := c.config.Int(c.section, option)
 	if err == nil {
 		return result, true
+	}
+	if _, ok := err.(config.OptionError); ok {
+		return 0, false
+	}
+
+	// If it wasn't an OptionError, it must have failed to parse.
+	ERROR.Println("Failed to parse config option", option, "as int:", err)
+	return 0, false
+}
+
+func (c *MergedConfig) Int64(option string) (r int64, found bool) {
+	result, err := c.config.Int(c.section, option)
+	if err == nil {
+		r := int64(result)
+		return r, true
 	}
 	if _, ok := err.(config.OptionError); ok {
 		return 0, false

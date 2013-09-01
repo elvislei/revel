@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"github.com/elvislei/revel/session"
 	"reflect"
 	"runtime"
 	"strings"
@@ -22,13 +21,12 @@ type Controller struct {
 	AppController interface{}     // The controller that was instantiated.
 	Action        string          // The fully qualified action name, e.g. "App.Index"
 
-
 	Request  *Request
 	Response *Response
 	Result   Result
 
 	Flash      Flash                  // User cookie, cleared after 1 request.
-	Session    session.SessionStore   // Session
+	Session    SessionStore           // Session
 	Params     *Params                // Parameters from URL and form (including multipart).
 	Args       map[string]interface{} // Per-request scratch space.
 	RenderArgs map[string]interface{} // Args passed to the template.
@@ -48,9 +46,9 @@ func NewController(req *Request, resp *Response) *Controller {
 	}
 }
 
-func (c *Controller) StartSession() session.SessionStore {
+func (c *Controller) StartSession() SessionStore {
 	if c.Session == nil {
-		c.Session = session.GlobalSessions.SessionStart(c.Response.Out, c.Request.Request)
+		c.Session = GlobalSession.SessionStart(c.Response.Out, c.Request.Request)
 	}
 	return c.Session
 }
@@ -75,7 +73,6 @@ func (c *Controller) DelSession(name interface{}) {
 	}
 	c.Session.Delete(name)
 }
-
 
 func (c *Controller) FlashParams() {
 	for key, vals := range c.Params.Values {

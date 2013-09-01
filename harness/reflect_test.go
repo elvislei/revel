@@ -1,7 +1,7 @@
 package harness
 
 import (
-	"github.com/robfig/revel"
+	"github.com/elvislei/revel"
 	"go/ast"
 	"go/parser"
 	"go/token"

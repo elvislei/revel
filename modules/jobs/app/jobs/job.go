@@ -2,7 +2,7 @@ package jobs
 
 import (
 	"github.com/robfig/cron"
-	"github.com/robfig/revel"
+	"github.com/elvislei/revel"
 	"reflect"
 	"runtime/debug"
 	"sync"

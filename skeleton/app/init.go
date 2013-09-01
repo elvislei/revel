@@ -2,7 +2,6 @@ package app
 
 import (
 	"github.com/elvislei/revel"
-	"github.com/elvislei/revel/session"
 )
 
 func init() {
@@ -12,11 +11,12 @@ func init() {
 		revel.RouterFilter,            // Use the routing table to select the right Action
 		revel.FilterConfiguringFilter, // A hook for adding or removing per-Action filters.
 		revel.ParamsFilter,            // Parse parameters into Controller.Params.
-		session.SessionFilter,           // Restore and write the session cookie.
+		revel.SessionFilter,           // Restore and write the session cookie.
 		revel.FlashFilter,             // Restore and write the flash cookie.
 		revel.ValidationFilter,        // Restore kept validation errors and save new ones from cookie.
 		revel.I18nFilter,              // Resolve the requested language
 		revel.InterceptorFilter,       // Run interceptors around the action.
+		revel.CosTimeFilter,           // count per-Action costed time,del this in prod
 		revel.ActionInvoker,           // Invoke the action.
 	}
 }

@@ -17,7 +17,7 @@ type TestSuite struct {
 	Client       *http.Client
 	Response     *http.Response
 	ResponseBody []byte
-	Session      Session
+	// Session      Session
 }
 
 var TestSuites []interface{} // Array of structs that embed TestSuite
@@ -28,7 +28,7 @@ func NewTestSuite() TestSuite {
 	jar, _ := cookiejar.New(nil)
 	return TestSuite{
 		Client:  &http.Client{Jar: jar},
-		Session: make(Session),
+		// Session: make(Session),
 	}
 }
 
@@ -86,7 +86,7 @@ func (t *TestSuite) PostForm(path string, data url.Values) {
 // examine the Response and ResponseBody properties. Session data will be
 // added to the request cookies for you.
 func (t *TestSuite) MakeRequestSession(req *http.Request) {
-	req.AddCookie(t.Session.cookie())
+	// req.AddCookie(t.Session.cookie())
 	t.MakeRequest(req)
 }
 
@@ -103,13 +103,13 @@ func (t *TestSuite) MakeRequest(req *http.Request) {
 	}
 
 	// Look for a session cookie in the response and parse it.
-	sessionCookieName := t.Session.cookie().Name
-	for _, cookie := range t.Client.Jar.Cookies(req.URL) {
-		if cookie.Name == sessionCookieName {
-			t.Session = getSessionFromCookie(cookie)
-			break
-		}
-	}
+	// sessionCookieName := t.Session.cookie().Name
+	// for _, cookie := range t.Client.Jar.Cookies(req.URL) {
+	// 	if cookie.Name == sessionCookieName {
+	// 		t.Session = getSessionFromCookie(cookie)
+	// 		break
+	// 	}
+	// }
 }
 
 // Create a websocket connection to the given path and return the connection

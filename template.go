@@ -190,7 +190,7 @@ func (loader *TemplateLoader) Refresh() *Error {
 		// (namely, if one of the TemplateFuncs does not have an acceptable signature).
 		funcErr := filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				ERROR.Println("error walking templates:", err)
+				ERROR.Println("error walking templates111:", err)
 				return nil
 			}
 
