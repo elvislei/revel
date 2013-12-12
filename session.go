@@ -21,6 +21,7 @@ var (
 
 func init() {
 	OnAppStart(func() {
+<<<<<<< HEAD
 		var found bool
 		if SessionOn, found = Config.Bool("session.on"); !found {
 			ERROR.Fatal("not found session.on section in conf file.")
@@ -41,6 +42,15 @@ func init() {
 			GlobalSession, _ = NewManager(SessionProvider, SessionName, SessionGCMaxLifetime, SessionSavePath)
 			go GlobalSession.GC() //新建一个线程无限循环,检查过期session
 
+=======
+		var err error
+		if expiresString, ok := Config.String("session.expires"); !ok {
+			expireAfterDuration = 30 * 24 * time.Hour
+		} else if expiresString == "session" {
+			expireAfterDuration = 0
+		} else if expireAfterDuration, err = time.ParseDuration(expiresString); err != nil {
+			panic(fmt.Errorf("session.expires invalid: %s", err))
+>>>>>>> upstream/master
 		}
 
 	})
@@ -54,15 +64,25 @@ type SessionStore interface {
 	SessionRelease()                  // release the resource
 }
 
+<<<<<<< HEAD
 type Provider interface {
 	SessionInit(maxlifetime int64, savePath string) error
 	SessionRead(sid string) (SessionStore, error)
 	SessionDestroy(sid string) error
 	SessionGC()
+=======
+// Return a time.Time with session expiration date
+func getSessionExpiration() time.Time {
+	if expireAfterDuration == 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(expireAfterDuration)
+>>>>>>> upstream/master
 }
 
 var provides = make(map[string]Provider)
 
+<<<<<<< HEAD
 // Register makes a session provide available by the provided name.
 // If Register is called twice with the same name or if driver is nil,
 // it panics.
@@ -72,6 +92,26 @@ func Register(name string, provide Provider) {
 	}
 	if _, dup := provides[name]; dup {
 		panic("session: Register called twice for provider " + name)
+=======
+	sessionData := url.QueryEscape(sessionValue)
+	return &http.Cookie{
+		Name:     CookiePrefix + "_SESSION",
+		Value:    Sign(sessionData) + "-" + sessionData,
+		Path:     "/",
+		HttpOnly: CookieHttpOnly,
+		Secure:   CookieSecure,
+		Expires:  ts.UTC(),
+	}
+}
+
+func sessionTimeoutExpiredOrMissing(session Session) bool {
+	if exp, present := session[TS_KEY]; !present {
+		return true
+	} else if exp == "session" {
+		return false
+	} else if expInt, _ := strconv.Atoi(exp); int64(expInt) < time.Now().Unix() {
+		return true
+>>>>>>> upstream/master
 	}
 	provides[name] = provide
 }
@@ -129,9 +169,21 @@ func (manager *Manager) SessionDestroy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+<<<<<<< HEAD
 func (manager *Manager) GC() {
 	manager.provider.SessionGC()
 	time.AfterFunc(time.Duration(manager.maxlifetime)*time.Second, func() { manager.GC() })
+=======
+func SessionFilter(c *Controller, fc []Filter) {
+	c.Session = restoreSession(c.Request.Request)
+	// Make session vars available in templates as {{.session.xyz}}
+	c.RenderArgs["session"] = c.Session
+
+	fc[0](c, fc[1:])
+
+	// Store the session (and sign it).
+	c.SetCookie(c.Session.cookie())
+>>>>>>> upstream/master
 }
 
 func (manager *Manager) sessionId() string {
@@ -142,7 +194,15 @@ func (manager *Manager) sessionId() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
+<<<<<<< HEAD
 func SessionFilter(c *Controller, fc []Filter) {
 
 	fc[0](c, fc[1:])
+=======
+func getSessionExpirationCookie(t time.Time) string {
+	if t.IsZero() {
+		return "session"
+	}
+	return strconv.FormatInt(t.Unix(), 10)
+>>>>>>> upstream/master
 }
