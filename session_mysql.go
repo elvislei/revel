@@ -9,6 +9,7 @@ package revel
 
 import (
 	"database/sql"
+
 	_ "github.com/go-sql-driver/mysql"
 	"sync"
 	"time"
@@ -58,6 +59,7 @@ func (st *MysqlSessionStore) updatemysql() {
 	if len(st.values) > 0 {
 		b, err := encodeGob(st.values)
 		if err != nil {
+			ERROR.Fatalf(" SESSION更新失败:%v", err)
 			return
 		}
 		st.c.Exec("UPDATE session set `session_data`= ? where session_key=?", b, st.sid)
