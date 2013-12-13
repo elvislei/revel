@@ -1,8 +1,8 @@
-app.name              ={{ .AppName }}
-app.secret            ={{ .Secret }}
+app.name              = {{ .AppName }}
+app.secret            = {{ .Secret }}
 http.addr             =
-http.port             =9000
-http.ssl              =false
+http.port             = 9000
+http.ssl              = false
 http.sslcert          =
 http.sslkey           =
 cookie.prefix         = REVEL
@@ -15,20 +15,10 @@ log.info.prefix       = "INFO  "
 log.warn.prefix       = "WARN  "
 log.error.prefix      = "ERROR "
 
-#db.import            = github.com/go-sql-driver/mysql
-#db.import            = github.com/ziutek/mymysql/godrv
-
-#mall.db.driver       = mysql
-mall.db.driver        = mymysql
-
-#mall.db.spec         = root:admin@tcp(localhost:3306)/boru?charset=utf8
-mall.db.spec          = tcp:localhost:3306*boru/root/admin
-
-#portal.db.driver     = mysql
-portal.db.driver      = mymysql
-
-#portal.db.spec       = root:admin@tcp(localhost:3306)/portal?charset=utf8
-portal.db.spec        = tcp:localhost:3306*portal/root/admin
+#default database is mysql 
+db.import             = github.com/go-sql-driver/mysql
+default.db.driver     = mysql
+default.db.spec       = root:admin@tcp(localhost:3306)/default?charset=utf8
 
 
 session.on            = true
@@ -40,14 +30,14 @@ session.savePath      = ""
 
 
 # The default language of this application.
-i18n.default_language =en
+i18n.default_language = en
 
-module.static         =github.com/elvislei/revel/modules/static
+module.static         = github.com/elvislei/revel/modules/static
 
 [dev]
-mode.dev              =true
-results.pretty        =true
-watch                 =true
+mode.dev              = true
+results.pretty        = true
+watch                 = true
 
 module.testrunner     = github.com/elvislei/revel/modules/testrunner
 
@@ -57,9 +47,9 @@ log.warn.output       = stderr
 log.error.output      = stderr
 
 [prod]
-mode.dev              =false
-results.pretty        =false
-watch                 =false
+mode.dev              = false
+results.pretty        = false
+watch                 = false
 
 module.testrunner     =
 
